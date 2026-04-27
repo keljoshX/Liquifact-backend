@@ -306,47 +306,18 @@ function adminAuth(req, res, next) {
 //   startServer();
 // }
 
-// module.exports = app;
-// module.exports.createApp = createApp;
-// module.exports.startServer = startServer;
-// module.exports.resetStore = resetStore;
-'use strict';
-
-const express = require('express');
-const cors = require('cors');
-require('dotenv').config();
-
-const config = require('./config');
-// Fail-fast boot validation
-if (process.env.NODE_ENV !== 'test') {
-  config.validate();
-}
-
-const { createSecurityMiddleware } = require('./middleware/security');
-const { createCorsOptions } = require('./config/cors');
-const { correlationIdMiddleware } = require('./middleware/correlationId');
-const {
-  jsonBodyLimit,
-  urlencodedBodyLimit,
-  payloadTooLargeHandler,
-} = require('./middleware/bodySizeLimits');
-const { auditMiddleware } = require('./middleware/audit');
-const { globalLimiter, sensitiveLimiter } = require('./middleware/rateLimit');
-const { authenticateToken } = require('./middleware/auth');
 const { apiKeyAuth } = require('./middleware/apiKey');
-const smeRouter = require('./routes/sme');
-const { problemJsonHandler, notFoundHandler } = require('./middleware/problemJson');
-const { callSorobanContract } = require('./services/soroban');
-const { performHealthChecks } = require('./services/health');
-const { resolveEscrowAddress, validateMappingConfig } = require('./config/escrowMap');
-const AppError = require('./errors/AppError');
-const logger = require('./logger');
+const { problemJsonHandler } = require('./middleware/problemJson');
+const { resolveEscrowAddress } = require('./config/escrowMap');
 const sentry = require('./observability/sentry');
-const requestId = require('./middleware/requestId');
-const pinoHttp = require('pino-http');
-const investRoutes = require('./routes/invest');
-const invoiceFileRouter = require('./routes/invoiceFile');
 const investorRoutes = require('./routes/investor');
+const retentionRoutes = require('./routes/retention');
+const { createRedisEscrowSummaryCache } = require('./cache/redis');
+const { legalHoldGate } = require('./middleware/legalHoldGate');
+const { submitEscrowFunding } = require('./services/escrowSubmit');
+const { fetchLegalHold } = require('./services/escrowRead');
+const { validateQuery, paginationQuerySchema } = require('./schemas/invoice');
+const { computeEscrowDerivedFields } = require('./services/escrowDerived');
 
 const PORT = process.env.PORT || 3001;
 
@@ -928,21 +899,21 @@ function createApp(options = {}) {
   // V1 API Namespace
   const v1Router = express.Router();
 
-  // Escrow read — uses readEscrowState with legal_hold
+  // Escrow read — returns raw state enriched with derived display fields
   v1Router.get('/escrow/:invoiceId', authenticateToken, async (req, res, next) => {
     const { invoiceId } = req.params;
+    const currentLedger = parseLedgerSequence(req.headers['x-ledger-sequence']);
     try {
-      // Resolve escrow contract address using the mapping system
       const escrowAddress = resolveEscrowAddress(invoiceId);
-      
+
       if (!escrowAddress) {
-        throw new AppError({
+        return next(new AppError({
           type: 'https://liquifact.com/probs/not-found',
           title: 'Escrow Not Found',
           status: 404,
           detail: `No escrow contract mapping found for invoice ID '${invoiceId}'`,
           instance: req.originalUrl,
-        });
+        }));
       }
 
       if (escrowSummaryCache) {
@@ -950,30 +921,21 @@ function createApp(options = {}) {
         if (cached.hit) {
           res.set('X-Cache', 'HIT');
           res.set('X-Escrow-Address', escrowAddress);
+          const derived = computeEscrowDerivedFields(cached.value);
           return res.json({
-            data: {
-              ...cached.value,
-              escrowAddress,
-            },
+            data: { ...cached.value, escrowAddress, ...derived },
             message: 'Escrow summary served from Redis cache.',
           });
         }
       }
 
-      /**
-       * Soroban operation for escrow lookup using resolved contract address.
-       *
-       * @returns {Promise<object>} Escrow state with contract address.
-       */
-      const operation = async () => {
-        return {
-          invoiceId,
-          escrowAddress,
-          status: 'not_found',
-          fundedAmount: 0,
-          ledgerSequence: currentLedger,
-        };
-      };
+      const operation = async () => ({
+        invoiceId,
+        escrowAddress,
+        status: 'not_found',
+        fundedAmount: 0,
+        ledgerSequence: currentLedger,
+      });
 
       const data = await callSorobanContract(operation);
       if (escrowSummaryCache) {
@@ -981,29 +943,13 @@ function createApp(options = {}) {
       }
       res.set('X-Cache', 'MISS');
       res.set('X-Escrow-Address', escrowAddress);
-      const operation = async () => ({
-        invoiceId,
-        status: 'not_found',
-        fundedAmount: 0,
-        ledgerSequence: currentLedger,
-      });
-
-      const data = await callSorobanContract(operation);
+      const derived = computeEscrowDerivedFields(data);
       return res.json({
-        data,
-        message: 'Escrow state read from Soroban contract (mocked).',
+        data: { ...data, ...derived },
+        message: 'Escrow state read from Soroban contract.',
       });
     } catch (error) {
-      throw new AppError({
-        type: 'https://liquifact.com/probs/service-unavailable',
-        title: 'Service Unavailable',
-        status: 503,
-        detail: 'Error fetching escrow state',
-        instance: req.originalUrl,
-      });
-    }
-  });
-      return res.status(500).json({ error: error.message || 'Error fetching escrow state' });
+      return next(error);
     }
   });
 
