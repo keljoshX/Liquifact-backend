@@ -351,6 +351,13 @@ const investRoutes = require('./routes/invest');
 const v1Router = require('./routes/v1');
 const invoiceFileRouter = require('./routes/invoiceFile');
 const investorRoutes = require('./routes/investor');
+const retentionRoutes = require('./routes/retention');
+const { createRedisEscrowSummaryCache } = require('./cache/redis');
+const { legalHoldGate } = require('./middleware/legalHoldGate');
+const { submitEscrowFunding } = require('./services/escrowSubmit');
+const { fetchLegalHold } = require('./services/escrowRead');
+const { validateQuery, paginationQuerySchema } = require('./schemas/invoice');
+const { computeEscrowDerivedFields } = require('./services/escrowDerived');
 
 const PORT = process.env.PORT || 3001;
 
@@ -956,18 +963,18 @@ function createApp(options = {}) {
   // Escrow routes in V1
   versionedRouter.get('/escrow/:invoiceId', authenticateToken, async (req, res) => {
     const { invoiceId } = req.params;
+    const currentLedger = parseLedgerSequence(req.headers['x-ledger-sequence']);
     try {
-      // Resolve escrow contract address using the mapping system
       const escrowAddress = resolveEscrowAddress(invoiceId);
-      
+
       if (!escrowAddress) {
-        throw new AppError({
+        return next(new AppError({
           type: 'https://liquifact.com/probs/not-found',
           title: 'Escrow Not Found',
           status: 404,
           detail: `No escrow contract mapping found for invoice ID '${invoiceId}'`,
           instance: req.originalUrl,
-        });
+        }));
       }
 
       if (escrowSummaryCache) {
@@ -975,30 +982,21 @@ function createApp(options = {}) {
         if (cached.hit) {
           res.set('X-Cache', 'HIT');
           res.set('X-Escrow-Address', escrowAddress);
+          const derived = computeEscrowDerivedFields(cached.value);
           return res.json({
-            data: {
-              ...cached.value,
-              escrowAddress,
-            },
+            data: { ...cached.value, escrowAddress, ...derived },
             message: 'Escrow summary served from Redis cache.',
           });
         }
       }
 
-      /**
-       * Soroban operation for escrow lookup using resolved contract address.
-       *
-       * @returns {Promise<object>} Escrow state with contract address.
-       */
-      const operation = async () => {
-        return {
-          invoiceId,
-          escrowAddress,
-          status: 'not_found',
-          fundedAmount: 0,
-          ledgerSequence: currentLedger,
-        };
-      };
+      const operation = async () => ({
+        invoiceId,
+        escrowAddress,
+        status: 'not_found',
+        fundedAmount: 0,
+        ledgerSequence: currentLedger,
+      });
 
       const data = await callSorobanContract(operation);
       if (escrowSummaryCache) {
@@ -1006,29 +1004,13 @@ function createApp(options = {}) {
       }
       res.set('X-Cache', 'MISS');
       res.set('X-Escrow-Address', escrowAddress);
-      const operation = async () => ({
-        invoiceId,
-        status: 'not_found',
-        fundedAmount: 0,
-        ledgerSequence: currentLedger,
-      });
-
-      const data = await callSorobanContract(operation);
+      const derived = computeEscrowDerivedFields(data);
       return res.json({
-        data,
-        message: 'Escrow state read from Soroban contract (mocked).',
+        data: { ...data, ...derived },
+        message: 'Escrow state read from Soroban contract.',
       });
     } catch (error) {
-      throw new AppError({
-        type: 'https://liquifact.com/probs/service-unavailable',
-        title: 'Service Unavailable',
-        status: 503,
-        detail: 'Error fetching escrow state',
-        instance: req.originalUrl,
-      });
-    }
-  });
-      return res.status(500).json({ error: error.message || 'Error fetching escrow state' });
+      return next(error);
     }
   });
 
