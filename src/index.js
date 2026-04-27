@@ -345,6 +345,7 @@ const sentry = require('./observability/sentry');
 const requestId = require('./middleware/requestId');
 const pinoHttp = require('pino-http');
 const investRoutes = require('./routes/invest');
+const v1Router = require('./routes/v1');
 const invoiceFileRouter = require('./routes/invoiceFile');
 const investorRoutes = require('./routes/investor');
 
@@ -417,12 +418,20 @@ function createApp(options = {}) {
   app.use(auditLogMiddleware);
   app.use(auditMiddleware);
 
+  // Deprecation middleware for /api paths
+  app.use('/api', (req, res, next) => {
+    res.set('Deprecation', 'true');
+    res.set('Warning', '299 - "This API version is deprecated. Please use /v1/ endpoints."');
+    next();
+  });
+
   // ───────── ROUTES ─────────
 
   app.use('/api/sme', smeRouter);
   app.use('/api/invest', investRoutes);
   app.use('/api/investor', investorRoutes);
   app.use('/api/invoices', invoiceFileRouter);
+  app.use('/v1', v1Router);
   app.use('/api/retention', retentionRoutes);
 
   app.get('/health', async (req, res) => {
@@ -926,10 +935,10 @@ function createApp(options = {}) {
   });
 
   // V1 API Namespace
-  const v1Router = express.Router();
+  const versionedRouter = express.Router();
 
-  // Escrow read — uses readEscrowState with legal_hold
-  v1Router.get('/escrow/:invoiceId', authenticateToken, async (req, res, next) => {
+  // Escrow routes in V1
+  versionedRouter.get('/escrow/:invoiceId', authenticateToken, async (req, res) => {
     const { invoiceId } = req.params;
     try {
       // Resolve escrow contract address using the mapping system
@@ -1045,7 +1054,7 @@ function createApp(options = {}) {
   });
 
   // Versioned routes
-  app.use('/v1', v1Router);
+  app.use('/v1', versionedRouter);
 
 // if (enableTestRoutes) {
 //   app.get('/__test__/explode', () => {
@@ -1061,7 +1070,7 @@ if (enableTestRoutes) {
   app.get('/api/escrow/:invoiceId', (req, res, next) => {
     res.set('Warning', '299 - "This endpoint is deprecated. Use /v1/escrow instead."');
     next();
-  }, v1Router.stack.find(s => s.route && s.route.path === '/escrow/:invoiceId').handle);
+  }, versionedRouter.stack.find(s => s.route && s.route.path === '/escrow/:invoiceId').handle);
 
   app.post('/api/escrow/:invoiceId/fund', (req, res, next) => {
     next();
