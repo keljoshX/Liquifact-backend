@@ -11,6 +11,7 @@
 'use strict';
 
 const { callSorobanContract } = require('./soroban');
+const { emitWebhook } = require('./webhooks');
 const logger = require('../logger');
 const { getTokenMetadata } = require('./tokenMeta');
 
@@ -146,6 +147,15 @@ async function readEscrowState(invoiceId, options = {}) {
     legal_hold: legalHold,
     funding_token: tokenMetadata,
   };
+
+  // Emit webhook for funded or settled escrows
+  if (baseState.status === 'funded') {
+    await emitWebhook('escrow_funded', safeId, { fundedAmount: baseState.fundedAmount });
+  } else if (baseState.status === 'settled') {
+    await emitWebhook('escrow_settled', safeId, { fundedAmount: baseState.fundedAmount });
+  }
+
+  return enrichedState;
 }
 
 /**
@@ -158,11 +168,25 @@ async function readEscrowState(invoiceId, options = {}) {
 async function _fetchBaseEscrowState(invoiceId, adapter) {
   const operation = adapter
     ? () => adapter(invoiceId)
-    : async () => ({
-        invoiceId,
-        status: 'not_found',
-        fundedAmount: 0,
-      });
+    : async () => {
+        // Production stub — replace with real Soroban RPC invocation:
+        //   return sorobanClient.invokeContract(contractId, 'get_escrow_state', [invoiceId]);
+        // For testing webhooks, return different statuses based on invoiceId
+        let status = 'not_found';
+        let fundedAmount = 0;
+        if (invoiceId === 'funded_invoice') {
+          status = 'funded';
+          fundedAmount = 1000;
+        } else if (invoiceId === 'settled_invoice') {
+          status = 'settled';
+          fundedAmount = 1000;
+        }
+        return {
+          invoiceId,
+          status,
+          fundedAmount,
+        };
+      };
 
   return callSorobanContract(operation);
 }
