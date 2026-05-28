@@ -2,11 +2,12 @@
 
 ## Overview
 
-This document outlines the KYC (Know Your Customer) compliance framework implemented in the LiquiFact backend. The system enforces SME identity verification before allowing capital deployment through funding endpoints.
+This document outlines the KYC (Know Your Customer) compliance framework implemented in the LiquiFact backend. The system enforces SME identity verification before allowing capital deployment through **all** funding and settlement endpoints.
 
 **Status**: Production-ready implementation with optional external provider integration.  
-**Date**: April 2026  
-**Version**: 1.0.0
+**Date**: May 2026  
+**Version**: 1.1.0  
+**Relates to**: Issue #222 — Enforce KYC gating on all capital-movement endpoints
 
 ---
 
@@ -83,26 +84,46 @@ kycService.canFundWithKycStatus(status) → boolean
 
 **File**: `src/middleware/kycGating.js`
 
-The `requireKycForFunding` middleware enforces KYC requirements on sensitive endpoints:
+The `requireKycForFunding` middleware enforces KYC requirements on **all** capital-movement endpoints.
+
+#### Security contract — smeId resolution (anti-spoofing fix, issue #222)
+
+Prior to this fix, `smeId` was resolved as
+`req.user.smeId || req.body.smeId || req.params.smeId`, which allowed an
+authenticated caller to supply a verified SME's ID in the request body or URL
+parameter and pass the gate for an SME they do not own.
+
+**The gate now resolves `smeId` exclusively from `req.user.smeId`** — the JWT
+claim set by `authenticateToken`. Body and parameter values are intentionally
+ignored during the identity check.
 
 ```javascript
-app.post('/api/invest/fund-invoice',
-  authenticateToken,
-  requireKycForFunding,    // ⭐ KYC gate
-  fundingHandler
-);
+// ✅ CORRECT — smeId tied to authenticated principal
+const smeId = req.user.smeId || null;
+
+// ❌ OLD (vulnerable) — body/params could be spoofed
+// const smeId = req.user.smeId || req.body?.smeId || req.params?.smeId;
 ```
+
+#### Gated endpoints
+
+| Endpoint | Method | Gate |
+|---|---|---|
+| `/api/invest/fund-invoice` | POST | `requireKycForFunding` |
+| `/api/invoices/:id/link-escrow` | POST | `requireKycForFunding` |
+| `/api/invoices/:id/transition` | POST | `conditionalKycGate` (only when `targetState` ∈ `{funded, settled}`) |
 
 **Behavior**:
 1. Validates user is authenticated
-2. Extracts SME ID from request (via JWT claim, body, or params)
-3. Checks KYC status for that SME
-4. Returns 403 if status is not 'verified' or 'exempted'
-5. Attaches KYC metadata to `req.kyc` for downstream handlers
+2. Extracts `smeId` exclusively from the JWT (`req.user.smeId`)
+3. Returns `400 MISSING_SME_ID` if the JWT contains no `smeId` claim
+4. Checks KYC status for the authenticated SME
+5. Returns `403 KYC_GATE_FAILED` if status is not `'verified'` or `'exempted'`
+6. Attaches `{ smeId, status, recordId, verifiedAt }` to `req.kyc` for downstream handlers
 
 **Error Codes**:
 - `401 UNAUTHORIZED`: No authentication
-- `400 MISSING_SME_ID`: SME ID not provided
+- `400 MISSING_SME_ID`: JWT contains no `smeId` claim
 - `403 KYC_GATE_FAILED`: KYC verification not met
 - `500 KYC_CHECK_FAILED`: Service error during KYC lookup
 
@@ -114,7 +135,7 @@ app.post('/api/invest/fund-invoice',
 
 #### POST /api/invest/fund-invoice
 
-Initiates capital transfer to escrow. **Requires KYC verification**.
+Initiates capital transfer to escrow. **Requires KYC verification** (`smeId` from JWT).
 
 **Request**:
 ```json
@@ -235,6 +256,22 @@ curl -X POST http://localhost:3001/api/invest/fund-invoice \
 
 ---
 
+#### POST /api/invoices/:id/link-escrow  *(added — issue #222)*
+
+Links an approved invoice into the escrow funding lifecycle. **Requires KYC verification**.
+
+The `smeId` is resolved from `req.user.smeId` (JWT). If absent, returns `400 MISSING_SME_ID`.
+
+---
+
+#### POST /api/invoices/:id/transition  *(conditionally gated — issue #222)*
+
+Executes an invoice state transition. KYC is required only when the `targetState` is a
+capital-moving state (`funded` or `settled`). Non-capital transitions (`approved`, `rejected`)
+are not blocked by this gate.
+
+---
+
 ## Environment Configuration
 
 ### Optional KYC Provider Integration
@@ -303,8 +340,9 @@ if (!validation.valid) {
 3. **Tenant Isolation**: Each request includes tenant context (via header or JWT)
 4. **Rate Limiting**: KYC endpoints subject to sensitive rate limits (40 req/hour)
 
-**Middleware Stack**:
+**Middleware Stack** (capital-movement endpoints):
 ```javascript
+// Example: POST /api/invest/fund-invoice
 app.post('/api/invest/fund-invoice',
   requestIdMiddleware,           // Add request ID
   pinoHttpLogger,                // Log request
@@ -315,12 +353,17 @@ app.post('/api/invest/fund-invoice',
   sentryRequestHandler,          // Error tracking
   rateLimiter,                   // 40 req/hour for sensitive ops
   auditMiddleware,               // Log mutation
-  authenticateToken,             // ⭐ Verify JWT
-  tenantMiddleware,              // ⭐ Extract tenant
-  requireKycForFunding,          // ⭐ KYC gate
+  authenticateToken,             // ⭐ Verify JWT (sets req.user)
+  tenantMiddleware,              // ⭐ Extract tenant (sets req.tenantId)
+  requireKycForFunding,          // ⭐ KYC gate (smeId from JWT only)
   fundingHandler                 // Business logic
 );
 ```
+
+> **Security note**: `smeId` for KYC lookup is resolved exclusively from
+> `req.user.smeId` (the verified JWT claim). Callers cannot supply a spoofed
+> `smeId` via `req.body` or `req.params` to pass the gate for an SME they do
+> not own.
 
 ### Key Handling
 
@@ -481,11 +524,15 @@ curl -X POST http://localhost:3001/api/invest/fund-invoice \
 
 ## Roadmap & Future Work
 
-### Phase 1: Current (✅ Complete)
+### Phase 1: Complete ✅
 - ✅ Invoice schema with kycStatus field
 - ✅ KYC service with mock implementation
 - ✅ KYC gating middleware
-- ✅ Funding endpoint protection
+- ✅ Funding endpoint protection (`POST /api/invest/fund-invoice`)
+- ✅ **KYC gate on ALL capital-movement endpoints** (issue #222)
+  - ✅ `POST /api/invoices/:id/link-escrow`
+  - ✅ `POST /api/invoices/:id/transition` (capital-moving states)
+- ✅ **Anti-spoofing: smeId resolved from JWT only** (issue #222)
 - ✅ Comprehensive testing (95%+ coverage)
 - ✅ Documentation
 
@@ -570,5 +617,6 @@ Before production deployment:
 
 ---
 
-**Last Updated**: April 25, 2026  
-**Maintained By**: LiquiFact Backend Team
+**Last Updated**: May 28, 2026  
+**Maintained By**: LiquiFact Backend Team  
+**Related Issues**: #222 — Enforce KYC gating on all capital-movement endpoints

@@ -1,7 +1,11 @@
 /**
  * Invoice State Transition Routes
- * Handles invoice lifecycle state transitions with audit logging
- * 
+ * Handles invoice lifecycle state transitions with audit logging.
+ *
+ * Capital-movement routes are protected by the KYC gate:
+ *   - POST /:id/link-escrow   — initiates escrow funding lifecycle
+ *   - POST /:id/transition     — when targetState is 'funded' or 'settled'
+ *
  * @module routes/invoiceStateRoutes
  */
 
@@ -15,6 +19,18 @@ const {
   canLinkToEscrow,
 } = require('../services/invoiceStateMachine');
 const { getAuditLogs } = require('../services/auditLog');
+const { requireKycForFunding } = require('../middleware/kycGating');
+
+/**
+ * States that initiate or settle capital movement and therefore require
+ * the caller to be KYC-verified before transitioning to them.
+ */
+const CAPITAL_MOVING_STATES = new Set([
+  'funded',
+  'settled',
+  INVOICE_STATES.FUNDED,
+  INVOICE_STATES.SETTLED,
+].filter(Boolean));
 
 /**
  * Helper to extract actor from request
@@ -85,7 +101,25 @@ router.get('/:id/state', (req, res) => {
  *   "reason": "Invoice verified and approved by finance team"
  * }
  */
-router.post('/:id/transition', (req, res, next) => {
+/**
+ * KYC gate selector for transition endpoint.
+ * Runs `requireKycForFunding` only when the requested targetState is a
+ * capital-moving state; passes through for non-capital transitions.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @returns {void}
+ */
+function conditionalKycGate(req, res, next) {
+  const { targetState } = req.body || {};
+  if (targetState && CAPITAL_MOVING_STATES.has(targetState)) {
+    return requireKycForFunding(req, res, next);
+  }
+  return next();
+}
+
+router.post('/:id/transition', conditionalKycGate, (req, res, next) => {
   const { id } = req.params;
   const { targetState, reason } = req.body;
 
@@ -227,9 +261,12 @@ router.post('/:id/approve', (req, res, next) => {
 
 /**
  * POST /api/invoices/:id/link-escrow
- * Link an approved invoice to escrow
+ * Link an approved invoice to escrow.
+ *
+ * This is a capital-movement endpoint: it initiates the escrow funding
+ * lifecycle. KYC must be verified before the link can be made.
  */
-router.post('/:id/link-escrow', (req, res, next) => {
+router.post('/:id/link-escrow', requireKycForFunding, (req, res, next) => {
   const { id } = req.params;
   const { escrowId, reason } = req.body;
 
