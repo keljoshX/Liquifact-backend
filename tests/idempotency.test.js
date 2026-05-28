@@ -1,12 +1,12 @@
-﻿'use strict';
+'use strict';
 
 /**
  * Tests for the idempotency middleware covering:
- *  - Missing Idempotency-Key header → 400
- *  - Invalid key format → 400
- *  - First call executes normally → 201
- *  - Duplicate key replays original response → 201
- *  - Same key + different body → 409
+ *  - Missing Idempotency-Key header ? 400
+ *  - Invalid key format ? 400
+ *  - First call executes normally ? 201
+ *  - Duplicate key replays original response ? 201
+ *  - Same key + different body ? 409
  *  - Keys persist in the database
  */
 
@@ -14,7 +14,7 @@ const request = require('supertest');
 const express = require('express');
 const crypto = require('crypto');
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// -- Helpers ---------------------------------------------------------------
 
 /** Generate a valid idempotency key */
 function validKey() {
@@ -31,11 +31,11 @@ function validBody(overrides = {}) {
   };
 }
 
-// ── Setup ─────────────────────────────────────────────────────────────────
+// -- Setup -----------------------------------------------------------------
 
 // We need to mock the knex db module BEFORE requiring the middleware.
 // The middleware requires db/knex at module load time.
-jest.mock('../db/knex', () => {
+jest.mock('../src/db/knex', () => {
   const store = new Map();
   return {
     transaction: jest.fn((fn) => {
@@ -93,7 +93,7 @@ function createApp() {
   return app;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────
+// -- Tests -----------------------------------------------------------------
 
 describe('Idempotency Middleware', () => {
   let app;
@@ -102,7 +102,7 @@ describe('Idempotency Middleware', () => {
     app = createApp();
   });
 
-  // ── Validation ────────────────────────────────────────────────────────
+  // -- Validation --------------------------------------------------------
 
   it('returns 400 when Idempotency-Key header is missing', async () => {
     const res = await request(app)
@@ -133,7 +133,7 @@ describe('Idempotency Middleware', () => {
     expect(res.body.error).toMatch(/8.*128.*URL-safe/);
   });
 
-  // ── First call ─────────────────────────────────────────────────────────
+  // -- First call ---------------------------------------------------------
 
   it('executes the handler on first call (new key)', async () => {
     const res = await request(app)
@@ -146,7 +146,7 @@ describe('Idempotency Middleware', () => {
     expect(res.body.data.investmentId).toBeDefined();
   });
 
-  // ── Duplicate key replay ───────────────────────────────────────────────
+  // -- Duplicate key replay -----------------------------------------------
 
   it('returns the cached response on duplicate key with same body', async () => {
     const key = validKey();
@@ -171,7 +171,7 @@ describe('Idempotency Middleware', () => {
     expect(second.body.data.status).toBe('pending');
   });
 
-  // ── Conflicting body ───────────────────────────────────────────────────
+  // -- Conflicting body ---------------------------------------------------
 
   it('returns 409 when same key is used with a different body', async () => {
     const key = validKey();
@@ -193,7 +193,7 @@ describe('Idempotency Middleware', () => {
     expect(res.body.error).toMatch(/different request body/);
   });
 
-  // ── Multiple different keys ────────────────────────────────────────────
+  // -- Multiple different keys --------------------------------------------
 
   it('allows multiple requests with different keys', async () => {
     const key1 = validKey();
@@ -217,7 +217,7 @@ describe('Idempotency Middleware', () => {
     expect(res2.body.data.invoiceId).toBe('INV-002');
   });
 
-  // ── Empty body handling ────────────────────────────────────────────────
+  // -- Empty body handling ------------------------------------------------
 
   it('handles requests with empty body', async () => {
     const key = validKey();

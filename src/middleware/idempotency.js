@@ -25,7 +25,7 @@ const db = require('../db/knex');
 
 const DEFAULT_TTL_HOURS = 24;
 
-/** Get TTL in hours from env or default. @returns {number} */
+/**`n * Get TTL in hours from env or default.`n * @returns {number}`n */
 function getTTLHours() {
   const raw = process.env.IDEMPOTENCY_KEY_TTL_HOURS;
   if (!raw) { return DEFAULT_TTL_HOURS; }
