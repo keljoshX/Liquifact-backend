@@ -126,8 +126,9 @@ While signatures prevent tampering and replay, consider implementing idempotency
 
 ## Delivery
 
-- Webhooks are sent via HTTP POST.
-- Timeout: 5 seconds.
+- Webhooks are sent via HTTP POST using Node.js native `fetch`.
+- Timeout: 5 seconds (implemented via `AbortController`).
+- Non-2xx responses are treated as failures and logged.
 - Failures are logged but not retried (retries to be implemented in follow-up).
 
 ## Testing

@@ -2,7 +2,7 @@
 
 process.env.NODE_ENV = 'test';
 
-jest.mock('axios');
+// Mock dependencies
 jest.mock('../src/db/knex', () => jest.fn());
 jest.mock('../src/logger', () => ({
   warn: jest.fn(),
@@ -10,7 +10,6 @@ jest.mock('../src/logger', () => ({
   info: jest.fn(),
 }));
 
-const axios = require('axios');
 const db = require('../src/db/knex');
 const logger = require('../src/logger');
 const {
@@ -23,37 +22,34 @@ const {
 } = require('../src/services/webhooks');
 
 describe('webhooks service', () => {
+  let mockFetch;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetch = jest.fn();
+    global.fetch = mockFetch;
   });
 
   describe('emitWebhook', () => {
     it('emits webhook successfully for valid tenant and settings', async () => {
-      const mockDb = jest.fn();
-      const mockSelect = jest.fn().mockReturnThis();
-      const mockWhere = jest.fn().mockReturnThis();
-      const mockFirstInvoice = jest.fn().mockResolvedValue({ tenant_id: 'tenant_123' });
-      const mockFirstTenant = jest.fn().mockResolvedValue({
-        settings: {
-          webhook_url: 'https://example.com/webhook',
-          webhook_secret: 'secret123',
-        },
-      });
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
 
-      mockDb.mockReturnValueOnce({
-        select: mockSelect,
+      // Mock DB queries
+      db.mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
-        first: mockFirstInvoice,
+        first: jest.fn().mockResolvedValue({ tenant_id: 'tenant_123' }),
       });
-      mockDb.mockReturnValueOnce({
-        select: mockSelect,
+      db.mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
-        first: mockFirstTenant,
+        first: jest.fn().mockResolvedValue({
+          settings: {
+            webhook_url: 'https://example.com/webhook',
+            webhook_secret: 'secret123',
+          },
+        }),
       });
-
-      db.mockImplementation(mockDb);
-
-      axios.post.mockResolvedValue({ status: 200 });
 
       const event = 'escrow_funded';
       const invoiceId = 'inv_123';
@@ -64,19 +60,17 @@ describe('webhooks service', () => {
       expect(db).toHaveBeenCalledWith('invoices');
       expect(db).toHaveBeenCalledWith('tenants');
 
-      expect(axios.post).toHaveBeenCalledWith(
+      // Verify fetch call
+      expect(mockFetch).toHaveBeenCalledWith(
         'https://example.com/webhook',
         expect.objectContaining({
-          event,
-          invoiceId,
-          amount: 1000,
-        }),
-        expect.objectContaining({
+          method: 'POST',
           headers: expect.objectContaining({
             'Content-Type': 'application/json',
             'X-Signature': expect.stringMatching(/^t=\d+,v1=[a-f0-9]{64}$/),
           }),
-          timeout: 5000,
+          body: expect.any(String),
+          signal: expect.any(Object),
         })
       );
 
@@ -95,7 +89,7 @@ describe('webhooks service', () => {
 
       await emitWebhook('escrow_funded', 'inv_123');
 
-      expect(axios.post).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
         { invoiceId: 'inv_123' },
         'Invoice not found for webhook emission'
@@ -113,7 +107,7 @@ describe('webhooks service', () => {
 
       await emitWebhook('escrow_funded', 'inv_123');
 
-      expect(axios.post).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
         { tenant_id: 'tenant_123', invoiceId: 'inv_123' },
         'Tenant settings not found for webhook'
@@ -131,7 +125,7 @@ describe('webhooks service', () => {
 
       await emitWebhook('escrow_funded', 'inv_123');
 
-      expect(axios.post).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith(
         { tenant_id: 'tenant_123', invoiceId: 'inv_123' },
         'Webhook URL or secret not configured'
@@ -139,6 +133,8 @@ describe('webhooks service', () => {
     });
 
     it('logs error on webhook emission failure', async () => {
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
       db.mockReturnValue({
         select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -152,8 +148,6 @@ describe('webhooks service', () => {
           }),
       });
 
-      axios.post.mockRejectedValue(new Error('Network error'));
-
       await emitWebhook('escrow_funded', 'inv_123');
 
       expect(logger.error).toHaveBeenCalledWith(
@@ -163,28 +157,34 @@ describe('webhooks service', () => {
     });
   });
 
-  describe('signature construction', () => {
-    it('creates signature with t=v1 format', () => {
-      const secret = 'secret123';
-      const rawBody = JSON.stringify({ event: 'escrow_funded', invoiceId: 'inv_123' });
-      const signatureHeader = createSignatureHeader(secret, rawBody);
+    it('verifies HMAC signature', async () => {
+      const webhookSecret = 'secret123';
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
 
-      expect(signatureHeader).toMatch(/^t=\d+,v1=[a-f0-9]{64}$/);
-      const parts = signatureHeader.split(',');
-      expect(parts[0]).toMatch(/^t=\d+$/);
-      expect(parts[1]).toMatch(/^v1=[a-f0-9]{64}$/);
-    });
+      db.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        first: jest.fn()
+          .mockResolvedValueOnce({ tenant_id: 'tenant_123' })
+          .mockResolvedValueOnce({
+            settings: {
+              webhook_url: 'https://example.com/webhook',
+              webhook_secret: webhookSecret,
+            },
+          }),
+      });
 
-    it('creates consistent signature for same inputs', () => {
-      const secret = 'secret123';
-      const rawBody = JSON.stringify({ event: 'escrow_funded', invoiceId: 'inv_123' });
-      const timestamp = Math.floor(Date.now() / 1000);
+      const event = 'escrow_funded';
+      const invoiceId = 'inv_123';
+      const additionalData = { amount: 1000 };
 
       const sig1 = createSignature(secret, rawBody, timestamp);
       const sig2 = createSignature(secret, rawBody, timestamp);
 
-      expect(sig1).toBe(sig2);
-    });
+      const callArgs = mockFetch.mock.calls[0];
+      const options = callArgs[1];
+      const payload = JSON.parse(options.body);
+      const signature = options.headers['X-Signature'];
 
     it('creates different signatures for different payloads', () => {
       const secret = 'secret123';
