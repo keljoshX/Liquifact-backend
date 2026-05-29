@@ -22,6 +22,22 @@ const registry = new client.Registry();
 client.collectDefaultMetrics({ register: registry });
 
 /**
+ * Counter for escrow reconciliation mismatches detected between the DB
+ * `fundedTotal` and the on-chain `funded_amount`.
+ *
+ * Incremented once per invoice whose reconciliation status resolves to
+ * `mismatch`. Use `rate(escrow_reconciliation_mismatches_total[1d])` to alert
+ * on drift appearing between nightly runs.
+ *
+ * @type {import('prom-client').Counter<string>}
+ */
+const escrowReconciliationMismatches = new client.Counter({
+  name: 'escrow_reconciliation_mismatches_total',
+  help: 'Total escrow reconciliation mismatches between DB fundedTotal and on-chain funded_amount',
+  registers: [registry],
+});
+
+/**
  * Express middleware that enforces metrics auth.
  *
  * @param {import('express').Request} req
@@ -57,4 +73,4 @@ async function metricsHandler(_req, res) {
   res.end(await registry.metrics());
 }
 
-module.exports = { registry, metricsAuth, metricsHandler };
+module.exports = { registry, metricsAuth, metricsHandler, escrowReconciliationMismatches };
