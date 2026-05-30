@@ -13,6 +13,7 @@
  */
 
 const client = require('prom-client');
+const crypto = require('crypto');
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -38,6 +39,28 @@ const escrowReconciliationMismatches = new client.Counter({
 });
 
 /**
+ * Constant-time string equality check to avoid leaking the secret via timing.
+ *
+ * Returns `false` immediately for non-strings or length mismatches (length is
+ * not itself secret here) and otherwise compares with `crypto.timingSafeEqual`.
+ *
+ * @param {string} a - First value.
+ * @param {string} b - Second value.
+ * @returns {boolean} True when the two strings are byte-for-byte equal.
+ */
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') {
+    return false;
+  }
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+/**
  * Express middleware that enforces metrics auth.
  *
  * @param {import('express').Request} req
@@ -50,7 +73,7 @@ function metricsAuth(req, res, next) {
 
   if (token) {
     const auth = req.headers['authorization'] || '';
-    if (auth === `Bearer ${token}`) {return next();}
+    if (safeEqual(auth, `Bearer ${token}`)) {return next();}
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }

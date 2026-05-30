@@ -84,8 +84,7 @@ async function* iterateInvoicesFromDb(options = {}) {
 
   let lastId = null;
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  for (;;) {
     let query = dbClient('invoices')
       .leftJoin('escrow_summaries', 'escrow_summaries.invoice_id', 'invoices.id')
       .whereIn('invoices.status', RECONCILABLE_STATUSES)
@@ -241,10 +240,10 @@ async function performReconciliation(options = {}) {
 /**
  * Job handler for escrow reconciliation. Executed by the background worker.
  *
- * @param {Object} [payload] - Job payload (unused for now).
+ * @param {Object} [_payload] - Job payload (unused for now).
  * @returns {Promise<Object>} Job result.
  */
-async function handleReconciliationJob(payload) {
+async function handleReconciliationJob(_payload) {
   try {
     const summary = await performReconciliation();
     return { success: true, summary };

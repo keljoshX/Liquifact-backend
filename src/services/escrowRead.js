@@ -11,7 +11,6 @@
 "use strict";
 
 const { callSorobanContract } = require("./soroban");
-const { emitWebhook } = require("./webhooks");
 const logger = require("../logger");
 const { getTokenMetadata } = require("./tokenMeta");
 
@@ -147,15 +146,6 @@ async function readEscrowState(invoiceId, options = {}) {
     legal_hold: legalHold,
     funding_token: tokenMetadata,
   };
-
-  // Emit webhook for funded or settled escrows
-  if (baseState.status === 'funded') {
-    await emitWebhook('escrow_funded', safeId, { fundedAmount: baseState.fundedAmount });
-  } else if (baseState.status === 'settled') {
-    await emitWebhook('escrow_settled', safeId, { fundedAmount: baseState.fundedAmount });
-  }
-
-  return enrichedState;
 }
 
 /**

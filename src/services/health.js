@@ -92,9 +92,10 @@ async function performHealthChecks() {
   const [soroban, database, reconciliation] = await Promise.all([
     checkSorobanHealth(),
     checkDatabaseHealth(),
+    checkReconciliationHealth(),
   ]);
 
-  const checks = { soroban, database };
+  const checks = { soroban, database, reconciliation };
   // healthy only when soroban is healthy or not configured (unknown)
   const healthy = soroban.status === 'healthy' || soroban.status === 'unknown';
 
