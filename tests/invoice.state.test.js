@@ -9,6 +9,7 @@ const request = require('supertest');
 const express = require('express');
 const {
   INVOICE_STATES,
+  VALID_TRANSITIONS,
   isValidState,
   isTransitionAllowed,
   isTerminalState,
@@ -84,7 +85,94 @@ describe('Invoice State Machine', () => {
       expect(isTransitionAllowed('pending', 'pending')).toBe(false);
       expect(isTransitionAllowed('approved', 'approved')).toBe(false);
     });
+
+    describe('Exhaustive transition matrix (Cartesian product)', () => {
+      const states = Object.values(INVOICE_STATES);
+      const terminalStates = [
+        INVOICE_STATES.LINKED_ESCROW,
+        INVOICE_STATES.REJECTED,
+        INVOICE_STATES.CANCELLED,
+      ];
+
+      const getExpectedValidationCode = ({ fromState, targetState }) => {
+        if (fromState === targetState) return 'ALREADY_IN_TARGET_STATE';
+        if (terminalStates.includes(fromState)) return 'TERMINAL_STATE';
+
+        const allowedTargets = VALID_TRANSITIONS[fromState] || [];
+        if (!allowedTargets.includes(targetState)) return 'INVALID_TRANSITION';
+        return null; // valid
+      };
+
+      states.forEach((fromState) => {
+        states.forEach((targetState) => {
+          const expectedAllowed = (VALID_TRANSITIONS[fromState] || []).includes(targetState) && fromState !== targetState && !terminalStates.includes(fromState);
+          const expectedCode = getExpectedValidationCode({ fromState, targetState });
+
+          it(`isTransitionAllowed/validateTransition/executeTransition: ${fromState} → ${targetState}`, () => {
+            expect(isTransitionAllowed(fromState, targetState)).toBe(expectedAllowed);
+
+            const validation = validateTransition({
+              invoiceId: 'inv-matrix',
+              currentState: fromState,
+              targetState,
+              actor: 'matrix-user',
+            });
+
+            if (expectedCode === null) {
+              expect(validation.isValid).toBe(true);
+              expect(validation.error).toBeUndefined();
+            } else {
+              expect(validation.isValid).toBe(false);
+              expect(validation.code).toBe(expectedCode);
+              if (expectedCode === 'INVALID_TRANSITION') {
+                expect(validation.allowedTransitions).toEqual(VALID_TRANSITIONS[fromState]);
+              }
+            }
+
+            clearAuditLogs();
+
+            if (expectedCode === null) {
+              const reason = `Reason ${fromState}→${targetState}`;
+              const exec = executeTransition({
+                invoiceId: 'inv-matrix-exec',
+                currentState: fromState,
+                targetState,
+                actor: 'matrix-user',
+                reason,
+                ipAddress: '192.0.2.1',
+                userAgent: 'Test-UA',
+                metadata: { testMatrix: true },
+              });
+
+              expect(exec.success).toBe(true);
+              expect(exec.previousState).toBe(fromState);
+              expect(exec.newState).toBe(targetState);
+
+              const logs = getAuditLogs({ resourceId: 'inv-matrix-exec', action: 'STATE_TRANSITION' });
+              expect(logs).toHaveLength(1);
+              expect(logs[0].changes.before.state).toBe(fromState);
+              expect(logs[0].changes.after.state).toBe(targetState);
+              expect(logs[0].metadata.transitionType).toBe(`${fromState}_to_${targetState}`);
+              expect(logs[0].metadata.reason).toBe(reason);
+            } else {
+              expect(() =>
+                executeTransition({
+                  invoiceId: 'inv-matrix-exec',
+                  currentState: fromState,
+                  targetState,
+                  actor: 'matrix-user',
+                  reason: 'Should not transition',
+                  ipAddress: '192.0.2.1',
+                  userAgent: 'Test-UA',
+                })
+              ).toThrow(expectedCode);
+            }
+          });
+        });
+      });
+    });
   });
+
 
   describe('Terminal States', () => {
     it('should identify terminal states', () => {
@@ -271,6 +359,21 @@ describe('Invoice State Machine', () => {
       expect(logs[0].changes.before.state).toBe('pending');
       expect(logs[0].changes.after.state).toBe('approved');
       expect(logs[0].metadata.reason).toBe('Invoice verified');
+    });
+
+    it('should persist terminal transition reason in audit metadata', () => {
+      const result = executeTransition({
+        invoiceId: 'inv-001',
+        currentState: 'pending',
+        targetState: 'rejected',
+        actor: 'user-123',
+        reason: 'Failed KYC checks',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newState).toBe('rejected');
+      const logs = getAuditLogs({ resourceId: 'inv-001' });
+      expect(logs[0].metadata.reason).toBe('Failed KYC checks');
     });
 
     it('should throw error for invalid transition', () => {
@@ -461,6 +564,18 @@ describe('Invoice State API Routes', () => {
       expect(res.body.code).toBe('TERMINAL_STATE');
     });
 
+    it('should require reason for terminal rejected transition', async () => {
+      const res = await request(app)
+        .post('/api/invoices/inv-001/transition')
+        .send({
+          targetState: 'rejected',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('MISSING_TRANSITION_REASON');
+      expect(res.body.error).toContain('Reason is required');
+    });
+
     it('should reject missing target state', async () => {
       const res = await request(app)
         .post('/api/invoices/inv-001/transition')
@@ -569,7 +684,7 @@ describe('Invoice State API Routes', () => {
         .send({});
 
       expect(res.status).toBe(400);
-      expect(res.body.code).toBe('MISSING_REASON');
+      expect(res.body.code).toBe('MISSING_TRANSITION_REASON');
     });
 
     it('should not allow rejecting approved invoice', async () => {

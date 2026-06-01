@@ -10,7 +10,10 @@ const router = express.Router();
 const marketplaceService = require('../services/marketplaceService');
 const { validateMarketplaceQueryParams } = require('../utils/validators');
 const { authenticateToken } = require('../middleware/auth');
+const { extractTenant } = require('../middleware/tenant');
 const logger = require('../logger');
+
+router.use(authenticateToken, extractTenant);
 
 /**
  * @swagger
@@ -93,22 +96,13 @@ const logger = require('../logger');
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                 meta:
- *                   type: object
- *                 message:
- *                   type: string
+ *               $ref: '#/components/schemas/MarketplaceListResponse'
  *       400:
- *         description: Invalid query parameters
+ *         $ref: '#/components/responses/Problem400'
  *       401:
- *         description: Unauthorized
+ *         $ref: '#/components/responses/Problem401'
  */
-router.get('/', authenticateToken, async (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const { isValid, errors, validatedParams } = validateMarketplaceQueryParams(req.query);
 
@@ -116,7 +110,24 @@ router.get('/', authenticateToken, async (req, res, next) => {
       return res.status(400).json({ errors });
     }
 
-    const result = await marketplaceService.getMarketplaceInvoices(validatedParams);
+    // Enforce explicit visibility rules; never allow clients to enumerate
+    // tenant-private statuses via filter manipulation.
+    if (
+      validatedParams.filters &&
+      validatedParams.filters.status &&
+      !marketplaceService.PUBLIC_INVESTABLE_INVOICE_STATUSES.includes(validatedParams.filters.status)
+    ) {
+      return res.status(400).json({
+        errors: [
+          `Invalid status for marketplace. Must be one of: ${marketplaceService.PUBLIC_INVESTABLE_INVOICE_STATUSES.join(', ')}`,
+        ],
+      });
+    }
+
+    const result = await marketplaceService.getMarketplaceInvoices({
+      tenantId: req.tenantId,
+      queryParams: validatedParams,
+    });
 
     logger.info({ 
       requestId: req.id, 

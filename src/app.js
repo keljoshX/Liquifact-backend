@@ -21,7 +21,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { callSorobanContract } = require('./services/soroban');
-const invoiceService = require('./services/invoice.service');
+const invoiceService = require('./services/invoiceService');
 const { resolveEscrowAddress } = require('./config/escrowMap');
 const { createCorsOptions, isCorsOriginRejectedError } = require('./config/cors');
 const { validateInvoiceQueryParams, validateInvoicePayload } = require('./utils/validators');
@@ -35,6 +35,8 @@ const { performHealthChecks } = require('./services/health');
 const responseHelper = require('./utils/responseHelper');
 const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
+const smeRoutes = require('./routes/sme');
+const invoiceFileRoutes = require('./routes/invoiceFile');
 
 /**
  * Returns a 403 JSON response only for the dedicated blocked-origin CORS error.
@@ -146,6 +148,8 @@ function createApp() {
         ready: 'GET /ready',
         invoices: 'GET/POST /api/invoices',
         escrow: 'GET /api/escrow/:invoiceId',
+        marketplace: 'GET /api/marketplace',
+        invest: 'GET /api/invest/opportunities, GET /api/invest/list',
       },
     });
   });
@@ -241,15 +245,19 @@ function createApp() {
     next(new Error('Sensitive'));
   });
 
-  // ── 5. Prometheus metrics ────────────────────────────────────────────────
+  // ── 5. SME & Invoice File routes ─────────────────────────────────────────
+  app.use('/api/sme', smeRoutes);
+  app.use('/api/invoices', invoiceFileRoutes);
+
+  // ── 6. Prometheus metrics ────────────────────────────────────────────────
   app.get('/metrics', metricsAuth, metricsHandler);
 
-  // ── 6. 404 catch-all ─────────────────────────────────────────────────────
+  // ── 7. 404 catch-all ─────────────────────────────────────────────────────
   app.use((req, res) => {
     res.status(404).json({ error: 'Not found', path: req.path });
   });
 
-  // ── 6 – 8. Error handlers (order matters) ────────────────────────────────
+  // ── 8 – 10. Error handlers (order matters) ───────────────────────────────
   app.use(handleCorsError);
   app.use(payloadTooLargeHandler);
   app.use(handleInternalError);

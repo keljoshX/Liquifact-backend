@@ -1,5 +1,7 @@
 # Escrow Event Ingest Strategy (Issue #102)
 
+> **See also:** [Escrow Integration Overview](./escrow-integration-overview.md) — end-to-end flow from chain events through projection tables to the API.
+
 ## Goal
 Persist a durable, replayable feed of latest Liquifact escrow contract events by `invoiceId`.
 
@@ -10,6 +12,13 @@ Use a Horizon-driven poller with cursor checkpointing and projection tables.
 - Cursor durability: `escrow_indexer_state`
 - Raw immutable event log: `escrow_events`
 - Latest per-invoice projection: `escrow_event_projection`
+
+## Projection Ordering Rules
+When multiple Horizon events arrive out of order for the same `invoiceId`, the projection is updated only when the incoming event is strictly newer:
+
+- Higher `ledgerSequence` always replaces lower.
+- When `ledgerSequence` is equal, `pagingToken` is used as a deterministic tiebreaker; greater `pagingToken` replaces lower.
+- Older events are still persisted to the immutable `escrow_events` log but do not overwrite the per-invoice projection.
 
 ## Why This Over Captive Core
 - Lower operational overhead for current Express service footprint.
@@ -26,6 +35,7 @@ Use a Horizon-driven poller with cursor checkpointing and projection tables.
 - Cursor is updated only after batch processing.
 - On restart, indexer resumes from persisted cursor.
 - Invalid events are skipped with warning logs to avoid deadlocking ingestion.
+- Cursor is saved only when it changes to keep writes idempotent across repeated cycles.
 
 ## Upgrade Path
 When throughput or deterministic replay needs exceed Horizon polling limits:

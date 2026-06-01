@@ -10,9 +10,12 @@ const express = require('express');
 const router = express.Router();
 const investService = require('../services/investService');
 const { authenticateToken } = require('../middleware/auth');
+const { extractTenant } = require('../middleware/tenant');
 const { requireKycForFunding } = require('../middleware/kycGating');
 const logger = require('../logger');
 const AppError = require('../errors/AppError');
+
+router.use(authenticateToken, extractTenant);
 
 /**
  * @swagger
@@ -45,26 +48,9 @@ const AppError = require('../errors/AppError');
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     description: Investment opportunity object
- *                 meta:
- *                   type: object
- *                   properties:
- *                     total:
- *                       type: integer
- *                     page:
- *                       type: integer
- *                     limit:
- *                       type: integer
- *                 message:
- *                   type: string
+ *               $ref: '#/components/schemas/StandardEnvelope'
  *       401:
- *         description: Unauthorized
+ *         $ref: '#/components/responses/Problem401'
  */
 /**
  * @swagger
@@ -95,11 +81,11 @@ const AppError = require('../errors/AppError');
  *       401:
  *         description: Unauthorized
  */
-router.get('/list', authenticateToken, async (req, res, next) => {
+router.get('/list', async (req, res, next) => {
   try {
     const { cursor, limit = 10 } = req.query;
 
-    const result = await investService.listInvestments({ cursor, limit });
+    const result = await investService.listInvestments({ tenantId: req.tenantId, cursor, limit });
 
     logger.info({ 
       requestId: req.id, 
@@ -116,11 +102,11 @@ router.get('/list', authenticateToken, async (req, res, next) => {
   }
 });
 
-router.get('/opportunities', authenticateToken, async (req, res, next) => {
+router.get('/opportunities', async (req, res, next) => {
   try {
     const { page = 1, limit = 10 } = req.query;
 
-    const result = await investService.getOpportunities({ page, limit });
+    const result = await investService.getOpportunities({ tenantId: req.tenantId, page, limit });
 
     logger.info({ 
       requestId: req.id, 
@@ -174,32 +160,18 @@ router.get('/opportunities', authenticateToken, async (req, res, next) => {
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: object
- *                   properties:
- *                     investmentId:
- *                       type: string
- *                     invoiceId:
- *                       type: string
- *                     status:
- *                       type: string
- *                       enum: [pending, confirmed, escrow, settled]
- *                 meta:
- *                   type: object
+ *               $ref: '#/components/schemas/FundInvoiceResponse'
  *       400:
- *         description: Validation error
+ *         $ref: '#/components/responses/Problem400'
  *       401:
- *         description: Unauthorized
+ *         $ref: '#/components/responses/Problem401'
  *       403:
- *         description: KYC verification required or failed
+ *         $ref: '#/components/responses/Problem403'
  *       500:
  *         description: Server error
  */
 router.post(
   '/fund-invoice',
-  authenticateToken,
   requireKycForFunding,
   async (req, res, next) => {
     try {

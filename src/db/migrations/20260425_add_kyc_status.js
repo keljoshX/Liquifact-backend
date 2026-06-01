@@ -1,40 +1,21 @@
 /**
- * Database Migration: Add KYC Status to Invoices
- * 
- * Adds kycStatus column to track SME KYC verification state.
- * KYC statuses: pending, verified, rejected, exempted
- * 
- * Usage: knex migrate:latest
+ * Database Migration: Create kyc_records table
+ *
+ * Persists KYC verification results so status survives restarts.
+ * One row per SME; upserted on each provider response.
  */
 
 exports.up = async (knex) => {
-  return knex.schema.table('invoices', (table) => {
-    table
-      .enum('kycStatus', ['pending', 'verified', 'rejected', 'exempted'], {
-        useNative: true,
-        enumName: 'kyc_status_enum',
-      })
-      .defaultTo('pending')
-      .notNullable();
-
-    // Track when KYC status was last updated
-    table.timestamp('kycStatusUpdatedAt').defaultTo(knex.fn.now());
-
-    // Reference to KYC record ID for audit trail
-    table.string('kycRecordId', 128).nullable();
-
-    // Add index for filtering by KYC status
-    table.index('kycStatus');
-    table.index(['kycStatus', 'createdAt']);
+  await knex.schema.createTable('kyc_records', (table) => {
+    table.string('sme_id', 128).primary();
+    table.string('status', 32).notNullable().defaultTo('pending');
+    table.string('provider_record_id', 256).nullable();
+    table.timestamp('verified_at').nullable();
+    table.timestamp('updated_at').notNullable().defaultTo(knex.fn.now());
+    table.index('status');
   });
 };
 
 exports.down = async (knex) => {
-  return knex.schema.table('invoices', (table) => {
-    table.dropIndex(['kycStatus', 'createdAt']);
-    table.dropIndex('kycStatus');
-    table.dropColumn('kycRecordId');
-    table.dropColumn('kycStatusUpdatedAt');
-    table.dropColumn('kycStatus');
-  });
+  await knex.schema.dropTableIfExists('kyc_records');
 };

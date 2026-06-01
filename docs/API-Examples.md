@@ -15,6 +15,30 @@ All protected endpoints require a Bearer token:
 export TOKEN="your-jwt-token-here"
 ```
 
+## Mounted Feature Routes
+
+The live Express app factory mounts the feature routers before the 404 handler, so these prefixes are available from the running API:
+
+| Area | Prefix | Example |
+| --- | --- | --- |
+| Invest | `/api/invest` | `GET /api/invest/opportunities` |
+| Marketplace | `/api/marketplace` | `GET /api/marketplace?sortBy=yield_bps&order=desc` |
+| Retention | `/api/retention` | `GET /api/retention/policies` |
+| Invoice state | `/api/invoices` | `GET /api/invoices/inv-001/state` |
+| Admin escrow | `/api/admin/escrow` | `GET /api/admin/escrow/version` |
+| SME | `/api/sme` | `GET /api/sme/metrics` |
+| Versioned API | `/v1` | `GET /v1/health` |
+
+Protected routes continue to require the route-level authentication already defined by each router. Retention operations are tenant-scoped, so service callers should also provide tenant context where applicable:
+
+```bash
+curl "$BASE_URL/api/retention/policies" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-tenant-id: tenant_123"
+```
+
+Invoice state routes are mounted at `/api/invoices` because the router owns its `/:id/state`, `/:id/transition`, `/:id/approve`, `/:id/link-escrow`, `/:id/history`, and `/:id/reject` paths.
+
 ## Error Response Examples
 
 ### 1. Validation Error (400)
@@ -540,6 +564,84 @@ const retryWithBackoff = async (fn, maxRetries = 3) => {
   }
 };
 ```
+
+## OpenAPI Contract Tests
+
+The LiquiFact API ships with enforced contract tests that build the OpenAPI
+3.0 document directly from the `@swagger` JSDoc annotations on each route
+(`src/openapi/openapiSpec.js`) and validate representative responses against
+the documented schemas with [Ajv](https://ajv.js.org/).
+
+- **Spec builder:** `src/openapi/openapiSpec.js` — produces the spec by
+  scanning `src/routes/**/*.js` and merging in shared `components.schemas`
+  (`StandardEnvelope`, `MarketplaceListResponse`, `FundInvoiceResponse`,
+  `Problem`) and shared `components.responses` (`Problem400`, `Problem401`,
+  `Problem403`).
+- **Spec tests:** `tests/openapi.test.js` — asserts that the generated spec
+  is a structurally valid OpenAPI 3.0 document, that protected operations
+  reference `bearerAuth`, and that every response of interest binds to the
+  expected component schema.
+- **Contract tests:** `tests/contract/api-schemas.test.js` — drives the
+  marketplace and invest routes with [supertest](https://github.com/ladjs/supertest)
+  and validates each response body against the documented schema. Coverage:
+    - `200 GET  /api/marketplace`         → `MarketplaceListResponse`
+    - `201 POST /api/invest/fund-invoice` → `FundInvoiceResponse`
+    - `400 POST /api/invest/fund-invoice` → RFC 7807 `Problem` (validation)
+    - `401 GET  /api/marketplace`         → RFC 7807 `Problem` (auth)
+    - `403 POST /api/invest/fund-invoice` → RFC 7807 `Problem` (KYC gate)
+
+Run the contract tests:
+
+```bash
+npm test -- tests/contract/api-schemas.test.js tests/openapi.test.js
+```
+
+### Standardized success envelope
+
+Successful responses on standardized routes use the envelope below. The
+`message` field is human-readable; structured data lives in `data`, and
+`meta` carries pagination, timestamps, and other ancillary fields.
+
+```json
+{
+  "data": [ /* resource payload */ ],
+  "meta": { "total": 1, "page": 1, "limit": 10, "totalPages": 1 },
+  "message": "Marketplace invoices retrieved successfully."
+}
+```
+
+### RFC 7807 problem envelope
+
+Error responses set `Content-Type: application/problem+json` and follow
+RFC 7807. The `type` URI identifies the problem class and is stable across
+releases; consumers should branch on `type` rather than `detail`.
+
+```json
+{
+  "type": "https://liquifact.com/probs/kyc-required",
+  "title": "KYC Verification Required",
+  "status": 403,
+  "detail": "SME KYC status 'pending' does not permit funding operations.",
+  "instance": "/api/invest/fund-invoice",
+  "code": "KYC_GATE_FAILED",
+  "retryable": false,
+  "retry_hint": "Complete KYC verification and try again."
+}
+```
+
+### Adding a new contract-tested endpoint
+
+1. Document the request/response shape on the route handler with a
+   `@swagger` JSDoc block. Reference shared schemas under
+   `#/components/schemas/*` and shared responses under
+   `#/components/responses/*` when possible.
+2. If the response needs a new shape, add the schema to
+   `baseDefinition.components.schemas` in `src/openapi/openapiSpec.js`.
+3. Add a case to `tests/contract/api-schemas.test.js` that drives the
+   endpoint with supertest and calls
+   `assertResponse(method, pathTemplate, status, res)`. The helper resolves
+   the documented schema from the spec and validates the body with Ajv,
+   so the test fails the moment the route drifts from its contract.
 
 ## Troubleshooting
 
