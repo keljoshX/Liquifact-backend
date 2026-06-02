@@ -14,6 +14,10 @@ const { callSorobanContract } = require("./soroban");
 const { emitWebhook } = require("./webhooks");
 const logger = require("../logger");
 const { getTokenMetadata } = require("./tokenMeta");
+const db = require("../db/knex");
+const { createRedisEscrowSummaryCache } = require("../cache/redis");
+
+const cache = createRedisEscrowSummaryCache();
 
 /**
  * Regex that a valid invoice ID must satisfy.
@@ -299,10 +303,76 @@ async function readEscrowStateWithAttestations(invoiceId, options = {}) {
   };
 }
 
+/**
+ * Retrieves the escrow state from the projection or cache,
+ * falling back to live read if necessary.
+ *
+ * @param {string} invoiceId - Invoice identifier
+ * @returns {Promise<Object>} The escrow state
+ */
+async function getEscrowStateWithProjection(invoiceId) {
+  const safeId = invoiceId.trim();
+
+  // Try cache first if enabled
+  if (cache) {
+    const cacheResult = await cache.getSummary(safeId);
+    if (cacheResult.hit) {
+      return cacheResult.value;
+    }
+  }
+
+  // Try projection table
+  const projection = await db('escrow_event_projection')
+    .where('invoice_id', safeId)
+    .first();
+
+  if (projection) {
+    let eventBody = {};
+    try {
+      eventBody = JSON.parse(projection.latest_event_body);
+    } catch (e) {
+      // Fallback if not JSON
+    }
+
+    const state = {
+      invoiceId: safeId,
+      status: eventBody.status || projection.latest_event_type,
+      fundedAmount: eventBody.fundedAmount || 0,
+      latest_ledger_sequence: parseInt(projection.latest_ledger_sequence, 10),
+      latest_event_type: projection.latest_event_type,
+      fromProjection: true
+    };
+
+    // Update cache
+    if (cache) {
+      await cache.setSummary(safeId, state, state.latest_ledger_sequence);
+    }
+    return state;
+  }
+
+  // Fallback to live read
+  const baseState = await _fetchBaseEscrowState(safeId);
+  const legalHold = await fetchLegalHold(safeId);
+
+  const state = {
+    ...baseState,
+    legal_hold: legalHold,
+    latest_event_type: 'live_read'
+  };
+
+  if (cache) {
+    // For live reads, we might not know the exact ledger, so we omit it
+    await cache.setSummary(safeId, state);
+  }
+
+  return state;
+}
+
 module.exports = {
   readEscrowState,
   readEscrowStateWithAttestations,
   fetchLegalHold,
   fetchAttestationAppendLog,
   validateInvoiceId,
+  getEscrowStateWithProjection,
 };
