@@ -2,7 +2,12 @@
 
 const db = require('../db/knex');
 const logger = require('../logger');
-const { resolveInvoiceByAddress } = require('../config/escrowMap');
+const {
+  escrowIndexerEventsProcessedTotal,
+  escrowIndexerEventsSkippedTotal,
+  escrowIndexerCycleFailuresTotal,
+  escrowIndexerLastCursorAdvanceTimestampSeconds,
+} = require('../metrics');
 
 const INVOICE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
@@ -393,9 +398,44 @@ function createEscrowIndexer(options = {}) {
         batchSize: Number(process.env.ESCROW_INDEXER_BATCH_SIZE || DEFAULT_BATCH_SIZE),
       });
       (options.log || logger).info(summary, 'Escrow indexer cycle completed.');
+
+      // Emit metrics
+      try {
+        // Validate processed count
+        if (!Number.isInteger(summary.processed) || summary.processed < 0) {
+          (options.log || logger).error(
+            { processed: summary.processed },
+            'Invalid processed count; incrementing cycle failures'
+          );
+          escrowIndexerCycleFailuresTotal.inc();
+        } else {
+          escrowIndexerEventsProcessedTotal.inc(summary.processed);
+        }
+
+        // Validate skipped count
+        if (!Number.isInteger(summary.skipped) || summary.skipped < 0) {
+          (options.log || logger).error(
+            { skipped: summary.skipped },
+            'Invalid skipped count; incrementing cycle failures'
+          );
+          escrowIndexerCycleFailuresTotal.inc();
+        } else {
+          escrowIndexerEventsSkippedTotal.inc(summary.skipped);
+        }
+
+        // Update last-advance gauge if cursor advanced
+        if (summary.cursorAfter !== summary.cursorBefore) {
+          escrowIndexerLastCursorAdvanceTimestampSeconds.set(Math.floor(Date.now() / 1000));
+        }
+      } catch (metricsError) {
+        (options.log || logger).error({ err: metricsError }, 'Error emitting indexer metrics');
+        escrowIndexerCycleFailuresTotal.inc();
+      }
+
       return summary;
     } catch (error) {
       (options.log || logger).error({ err: error }, 'Escrow indexer cycle failed.');
+      escrowIndexerCycleFailuresTotal.inc();
       return null;
     } finally {
       running = false;

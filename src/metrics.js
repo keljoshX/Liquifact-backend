@@ -23,42 +23,49 @@ const registry = new client.Registry();
 client.collectDefaultMetrics({ register: registry });
 
 /**
- * Counter for escrow reconciliation mismatches detected between the DB
- * `fundedTotal` and the on-chain `funded_amount`.
- *
- * Incremented once per invoice whose reconciliation status resolves to
- * `mismatch`. Use `rate(escrow_reconciliation_mismatches_total[1d])` to alert
- * on drift appearing between nightly runs.
- *
- * @type {import('prom-client').Counter<string>}
+ * Counter: Escrow events successfully processed by the indexer per cycle.
+ * Incremented by the number of events persisted in each indexer cycle.
+ * @type {import('prom-client').Counter}
  */
-const escrowReconciliationMismatches = new client.Counter({
-  name: 'escrow_reconciliation_mismatches_total',
-  help: 'Total escrow reconciliation mismatches between DB fundedTotal and on-chain funded_amount',
+const escrowIndexerEventsProcessedTotal = new client.Counter({
+  name: 'escrow_indexer_events_processed_total',
+  help: 'Total number of escrow events successfully processed and persisted by the indexer',
   registers: [registry],
 });
 
 /**
- * Constant-time string equality check to avoid leaking the secret via timing.
- *
- * Returns `false` immediately for non-strings or length mismatches (length is
- * not itself secret here) and otherwise compares with `crypto.timingSafeEqual`.
- *
- * @param {string} a - First value.
- * @param {string} b - Second value.
- * @returns {boolean} True when the two strings are byte-for-byte equal.
+ * Counter: Escrow events skipped (invalid) by the indexer per cycle.
+ * Incremented when an event fails validation or persistence.
+ * @type {import('prom-client').Counter}
  */
-function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') {
-    return false;
-  }
-  const aBuf = Buffer.from(a);
-  const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(aBuf, bBuf);
-}
+const escrowIndexerEventsSkippedTotal = new client.Counter({
+  name: 'escrow_indexer_events_skipped_total',
+  help: 'Total number of escrow events skipped due to validation or persistence errors',
+  registers: [registry],
+});
+
+/**
+ * Counter: Escrow indexer cycle failures.
+ * Incremented when a cycle throws an unhandled exception or receives invalid metric data.
+ * @type {import('prom-client').Counter}
+ */
+const escrowIndexerCycleFailuresTotal = new client.Counter({
+  name: 'escrow_indexer_cycle_failures_total',
+  help: 'Total number of escrow indexer cycles that failed with an exception',
+  registers: [registry],
+});
+
+/**
+ * Gauge: Unix timestamp (seconds) of the last successful cursor advance.
+ * Updated when a cycle completes and cursorAfter !== cursorBefore.
+ * Used by health check to detect indexer staleness.
+ * @type {import('prom-client').Gauge}
+ */
+const escrowIndexerLastCursorAdvanceTimestampSeconds = new client.Gauge({
+  name: 'escrow_indexer_last_cursor_advance_timestamp_seconds',
+  help: 'Unix timestamp (seconds) of the last cycle where the cursor advanced (cursorAfter !== cursorBefore)',
+  registers: [registry],
+});
 
 /**
  * Express middleware that enforces metrics auth.
@@ -96,4 +103,12 @@ async function metricsHandler(_req, res) {
   res.end(await registry.metrics());
 }
 
-module.exports = { registry, metricsAuth, metricsHandler, escrowReconciliationMismatches };
+module.exports = {
+  registry,
+  metricsAuth,
+  metricsHandler,
+  escrowIndexerEventsProcessedTotal,
+  escrowIndexerEventsSkippedTotal,
+  escrowIndexerCycleFailuresTotal,
+  escrowIndexerLastCursorAdvanceTimestampSeconds,
+};

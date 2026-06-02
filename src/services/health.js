@@ -5,6 +5,10 @@
  * @module services/health
  */
 
+const { getKycProviderConfig } = require('./kycService');
+const { escrowIndexerLastCursorAdvanceTimestampSeconds } = require('../metrics');
+const cfg = require('../config');
+
 /**
  * Checks if the Soroban RPC endpoint is reachable.
  * @returns {Promise<{status: string, latency?: number, error?: string}>}
@@ -85,21 +89,110 @@ async function checkReconciliationHealth() {
 }
 
 /**
+ * Checks if the KYC provider is reachable.
+ * Only runs when the provider is enabled (URL + API key configured).
+ * The API key is sent in the Authorization header and never included in the response.
+ * @returns {Promise<{status: string, latency?: number, error?: string}>}
+ */
+async function checkKycHealth() {
+  const kycCfg = getKycProviderConfig();
+  if (!kycCfg.enabled) {
+    return { status: 'disabled' };
+  }
+
+  const start = Date.now();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(kycCfg.baseUrl, {
+      method: 'HEAD',
+      headers: { Authorization: `Bearer ${kycCfg.apiKey}` },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+    const latency = Date.now() - start;
+
+    // Any HTTP response (even 4xx) means the host is reachable
+    return response.ok || response.status < 500
+      ? { status: 'healthy', latency }
+      : { status: 'unhealthy', latency, error: `HTTP ${response.status}` };
+  } catch (error) {
+    const latency = Date.now() - start;
+    return { status: 'unhealthy', latency, error: error.message };
+  }
+}
+
+/**
+ * Checks escrow indexer staleness.
+ * Returns 'disabled' when the indexer is not enabled.
+ * Returns 'stale' when the cursor hasn't advanced within the configured threshold.
+ * Returns 'healthy' when the cursor has advanced recently or initially (gauge not yet set).
+ *
+ * @returns {Promise<{status: string, elapsedSeconds?: number, lastAdvanceTimestamp?: number, threshold?: number, error?: string}>} Indexer staleness health status.
+ */
+async function checkIndexerStaleness() {
+  try {
+    const config = cfg.get();
+
+    // Check if indexer is enabled
+    if (config.ESCROW_INDEXER_ENABLED !== 'true') {
+      return { status: 'disabled' };
+    }
+
+    // Get the last advance timestamp from gauge
+    const lastAdvanceTimestamp = escrowIndexerLastCursorAdvanceTimestampSeconds.get();
+
+    // If gauge has never been set, treat as healthy (no false positive on startup)
+    if (lastAdvanceTimestamp === undefined || lastAdvanceTimestamp === 0) {
+      return { status: 'healthy', lastAdvanceTimestamp: 0, threshold: config.ESCROW_INDEXER_STALE_THRESHOLD_SECONDS };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const elapsedSeconds = now - (lastAdvanceTimestamp || 0);
+    const threshold = config.ESCROW_INDEXER_STALE_THRESHOLD_SECONDS || 300;
+
+    if (elapsedSeconds > threshold) {
+      return {
+        status: 'stale',
+        elapsedSeconds,
+        lastAdvanceTimestamp,
+        threshold,
+        error: `Cursor has not advanced for ${elapsedSeconds} seconds (threshold: ${threshold})`,
+      };
+    }
+
+    return {
+      status: 'healthy',
+      elapsedSeconds,
+      lastAdvanceTimestamp,
+      threshold,
+    };
+  } catch (error) {
+    return { status: 'error', error: error.message };
+  }
+}
+
+/**
  * Performs all dependency health checks.
  * @returns {Promise<{healthy: boolean, checks: Object}>}
  */
 async function performHealthChecks() {
-  const [soroban, database, reconciliation] = await Promise.all([
+  const [soroban, database, kyc, indexerStaleness] = await Promise.all([
     checkSorobanHealth(),
     checkDatabaseHealth(),
-    checkReconciliationHealth(),
+    checkKycHealth(),
+    checkIndexerStaleness(),
   ]);
 
-  const checks = { soroban, database, reconciliation };
-  // healthy only when soroban is healthy or not configured (unknown)
-  const healthy = soroban.status === 'healthy' || soroban.status === 'unknown';
+  const checks = { soroban, database, kyc, indexerStaleness };
+  const healthy =
+    (soroban.status === 'healthy' || soroban.status === 'unknown') &&
+    (kyc.status === 'healthy' || kyc.status === 'disabled') &&
+    (indexerStaleness.status === 'healthy' || indexerStaleness.status === 'disabled');
 
   return { healthy, checks };
 }
 
-module.exports = { checkSorobanHealth, checkDatabaseHealth, performHealthChecks };
+module.exports = { checkSorobanHealth, checkDatabaseHealth, checkKycHealth, checkIndexerStaleness, performHealthChecks };

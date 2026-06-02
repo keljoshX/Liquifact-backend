@@ -70,3 +70,247 @@ When throughput or deterministic replay needs exceed Horizon polling limits:
 1. Deploy Captive Core feeder.
 2. Keep writing to `escrow_events` and `escrow_event_projection`.
 3. Reuse existing projection semantics and API readers.
+
+## Observability: Metrics and Health Checks
+
+### Prometheus Metrics
+
+The escrow indexer emits four Prometheus metrics per cycle. All metrics are reset to zero on service startup.
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `escrow_indexer_events_processed_total` | Counter | Total number of escrow events successfully processed and persisted by the indexer. Incremented by the count of valid events in each cycle. |
+| `escrow_indexer_events_skipped_total` | Counter | Total number of escrow events skipped due to validation or persistence errors. Incremented when an event fails normalization or database constraints. |
+| `escrow_indexer_cycle_failures_total` | Counter | Total number of indexer cycles that failed with an unhandled exception. Incremented once per failed cycle, even if multiple events fail within that cycle. |
+| `escrow_indexer_last_cursor_advance_timestamp_seconds` | Gauge | Unix timestamp (seconds) of the last cycle where the cursor advanced (`cursorAfter !== cursorBefore`). Used by the health check to detect staleness. |
+
+#### Metric Semantics
+
+- **Counters** accumulate indefinitely across the lifetime of the service. Use `rate(metric[5m])` to compute per-second rates over time windows.
+- **Gauge** stores a Unix timestamp in seconds. The health check computes elapsed time as `Date.now() / 1000 - gaugeValue`.
+- **Gauge initialization**: The gauge is not initialized on startup and is only set when a cursor advance occurs. This avoids false positives in the health check immediately after service startup. See [Health Check: Staleness](#health-check-staleness).
+
+#### Metric Emission and Validation
+
+Metrics are emitted **after** each cycle completes, regardless of whether it processed zero or multiple events:
+
+```javascript
+// Pseudocode
+result = runEscrowIndexerCycle(...)
+if (Number.isInteger(result.processed) && result.processed >= 0) {
+  escrowIndexerEventsProcessedTotal.inc(result.processed)
+} else {
+  escrowIndexerCycleFailuresTotal.inc()
+  log.error('Invalid processed count')
+}
+// ... similar for skipped ...
+if (result.cursorAfter !== result.cursorBefore) {
+  escrowIndexerLastCursorAdvanceTimestampSeconds.set(Date.now() / 1000)
+}
+```
+
+If `result.processed` or `result.skipped` are not valid non-negative integers, the failure counter is incremented and the invalid count is **not** passed to the counter's `.inc()` method.
+
+### Health Check: Staleness
+
+The `/ready` endpoint includes an `indexerStaleness` check that signals whether the indexer has stalled.
+
+#### Check Behavior
+
+The check returns:
+
+- **`status: "disabled"`** when `ESCROW_INDEXER_ENABLED` is not `"true"` (case-sensitive).
+- **`status: "healthy"`** when:
+  - The indexer is enabled and the gauge has never been set (initial startup state), or
+  - The elapsed time since the last cursor advance is within the `ESCROW_INDEXER_STALE_THRESHOLD_SECONDS` threshold.
+- **`status: "stale"`** when the elapsed time exceeds the threshold.
+- **`status: "error"`** if an exception occurs while reading the configuration or gauge.
+
+#### Staleness Threshold
+
+The staleness threshold is configurable via the `ESCROW_INDEXER_STALE_THRESHOLD_SECONDS` environment variable:
+
+```bash
+# Default: 300 seconds (5 minutes)
+ESCROW_INDEXER_STALE_THRESHOLD_SECONDS=300
+```
+
+At query time, the health check computes:
+
+```javascript
+elapsedSeconds = Math.floor(Date.now() / 1000) - lastAdvanceTimestamp
+isStale = elapsedSeconds > threshold
+```
+
+#### Example: Detecting a Stalled Indexer
+
+```bash
+# Assume ESCROW_INDEXER_ENABLED=true and threshold=300
+
+# Recently advanced cursor → healthy
+GET /ready
+HTTP/1.1 200 OK
+{
+  "ready": true,
+  "checks": {
+    "indexerStaleness": {
+      "status": "healthy",
+      "elapsedSeconds": 45,
+      "lastAdvanceTimestamp": 1748610000,
+      "threshold": 300
+    }
+  }
+}
+
+# Cursor has not advanced in 400 seconds → degraded
+GET /ready
+HTTP/1.1 503 Service Unavailable
+{
+  "ready": false,
+  "checks": {
+    "indexerStaleness": {
+      "status": "stale",
+      "elapsedSeconds": 400,
+      "lastAdvanceTimestamp": 1748609600,
+      "threshold": 300,
+      "error": "Cursor has not advanced for 400 seconds (threshold: 300)"
+    }
+  }
+}
+```
+
+#### Startup Behavior
+
+On service startup, the gauge is unset (no value). The health check treats an unset gauge as **healthy** to avoid false positives:
+
+```javascript
+if (lastAdvanceTimestamp === undefined || lastAdvanceTimestamp === 0) {
+  return { status: 'healthy' }; // No false positive on startup
+}
+```
+
+This design allows the service to report `/ready: true` even if the indexer hasn't advanced yet, provided other dependencies (Soroban, KYC) are healthy.
+
+### Prometheus Query Examples
+
+#### Detect Indexer Never Started
+
+```promql
+escrow_indexer_last_cursor_advance_timestamp_seconds == 0
+```
+
+#### Detect Stalled Indexer
+
+```promql
+# Cursor has not advanced in more than 5 minutes (300 seconds)
+(time() - escrow_indexer_last_cursor_advance_timestamp_seconds) > 300
+```
+
+#### Event Processing Rate
+
+```promql
+rate(escrow_indexer_events_processed_total[5m])
+```
+
+#### Cycle Success Rate
+
+```promql
+# Percentage of cycles without failures (requires cycle counter — not yet implemented)
+(rate(escrow_indexer_events_processed_total[5m])) /
+(rate(escrow_indexer_events_processed_total[5m]) + rate(escrow_indexer_cycle_failures_total[5m]))
+```
+
+## Configuration Reference
+
+### Environment Variables
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ESCROW_INDEXER_ENABLED` | String (`"true"` or `"false"`) | `"false"` | Enable/disable the escrow indexer job. Case-sensitive. |
+| `ESCROW_INDEXER_POLL_INTERVAL_MS` | Integer | `15000` | Milliseconds between indexer cycles. |
+| `ESCROW_INDEXER_BATCH_SIZE` | Integer | `100` | Maximum events to fetch and process per cycle. |
+| `ESCROW_INDEXER_STALE_THRESHOLD_SECONDS` | Integer | `300` | Seconds allowed without cursor advance before `/ready` reports degraded. |
+| `STELLAR_HORIZON_URL` | URL | `https://horizon-testnet.stellar.org` | Horizon API endpoint for event streaming. |
+
+#### Example `.env` Configuration
+
+```dotenv
+ESCROW_INDEXER_ENABLED=true
+ESCROW_INDEXER_POLL_INTERVAL_MS=15000
+ESCROW_INDEXER_BATCH_SIZE=100
+ESCROW_INDEXER_STALE_THRESHOLD_SECONDS=300
+STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+```
+
+### Feature Flag Validation
+
+At service startup, `src/config/index.js` validates `ESCROW_INDEXER_ENABLED` using Zod:
+
+```javascript
+z.enum(['true', 'false']).default('false')
+```
+
+Any other value (including `"True"`, `1`, or truthy strings) will fail validation and prevent service startup.
+
+## Security Considerations
+
+### No PII in Metrics
+
+- Metric names contain only job names, status identifiers, and standard fields (`total`, `timestamp`).
+- Metric label values (if any were added in future) must never contain user addresses, transaction IDs, or other personally identifiable information.
+- Each metric is designed to support horizontal scaling: counters measure service-level throughput; gauges measure time-based staleness only.
+
+### Input Validation Before Metric Increment
+
+Before emitting metrics, the cycle validates:
+
+- `result.processed` is a non-negative integer (not a string, not negative).
+- `result.skipped` is a non-negative integer.
+- `result.cursorBefore` and `result.cursorAfter` are strings or null.
+
+If validation fails, the cycle failure counter is incremented and a warning is logged.
+
+### No Secrets in Logs or Metrics
+
+- Metrics never include Stellar secret keys, Horizon API keys, or other credentials.
+- Logs include event IDs and cycle summary counts, but never private keys or contract data.
+- The Horizon URL is a public endpoint (testnet or mainnet); API keys are not required for Horizon event streaming.
+
+## Monitoring and Alerting Recommendations
+
+### Prometheus Alert Rules (Example)
+
+```yaml
+groups:
+  - name: escrow-indexer
+    rules:
+      - alert: EscrowIndexerStalled
+        expr: (time() - escrow_indexer_last_cursor_advance_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Escrow indexer cursor has not advanced for 10 minutes"
+          description: "Last cursor advance: {{ $value | humanizeTimestamp }}"
+
+      - alert: EscrowIndexerHighFailureRate
+        expr: rate(escrow_indexer_cycle_failures_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Escrow indexer experiencing high failure rate"
+          description: "Failure rate: {{ $value | humanizePercentage }}"
+```
+
+## Testing
+
+All metrics and health checks are tested in `tests/unit/escrowIndexer.metrics.test.js`:
+
+- Metric increment correctness (processed, skipped, failures, cursor advance).
+- Health check staleness detection (threshold, disabled flag, startup state).
+- Security validation (invalid input, feature flag parsing).
+- Integration with `/ready` and `/metrics` endpoints.
+- Vacuousness checks confirm conditions are correctly implemented.
+
+See [Coverage Report](./Test-Coverage-Analysis.md) for full test coverage.
