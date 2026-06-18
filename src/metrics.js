@@ -12,15 +12,28 @@
  * @module metrics
  */
 
-const client = require('prom-client');
-const crypto = require('crypto');
+let client;
+try {
+  client = require('prom-client');
+} catch (e) {
+  // Fallback shim for environments without prom-client (tests)
+  client = {
+    Registry: class {
+      constructor() { this.contentType = 'text/plain'; }
+      metrics() { return ''; }
+    },
+    collectDefaultMetrics: () => { },
+  };
+}
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 /** Shared registry — exported so tests can reset it between runs. */
 const registry = new client.Registry();
 
-client.collectDefaultMetrics({ register: registry });
+if (typeof client.collectDefaultMetrics === 'function') {
+  client.collectDefaultMetrics({ register: registry });
+}
 
 /**
  * Counter: Escrow events successfully processed by the indexer per cycle.
@@ -87,7 +100,7 @@ function metricsAuth(req, res, next) {
 
   // No token configured — allow loopback only
   const ip = req.ip || req.socket.remoteAddress || '';
-  if (LOOPBACK.has(ip)) {return next();}
+  if (LOOPBACK.has(ip)) { return next(); }
 
   res.status(401).json({ error: 'Unauthorized' });
 }
