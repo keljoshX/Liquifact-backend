@@ -188,54 +188,136 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
-### Invest
+## Invoice Upload Security
 
-`GET /api/invest/opportunities` — Returns a paginated list of publicly investable invoices enriched with on-chain escrow state.
+LiquiFact uses tenant-scoped object storage and strict validation controls for invoice uploads.
 
-Only invoices with a status of `verified` or `partially_funded` are exposed. On-chain reads that fail for individual invoices are silently skipped — the endpoint returns 200 even when batch reads encounter errors.
+### Storage Key Scoping
 
-**Query Parameters:**
+Invoice files are stored using tenant and invoice scoped object keys:
 
-| Name | Type | Default | Description |
-| --- | --- | --- | --- |
-| `page` | integer | `1` | Page number (1-based) |
-| `limit` | integer | `20` | Items per page (max 100) |
+```text
+tenants/{tenantId}/invoices/{invoiceId}/{uuid}-{filename}
+```
 
-**Example request:**
+Example:
+
+```text
+tenants/tenant-123/invoices/inv-456/550e8400-e29b-41d4-a716-446655440000-invoice.pdf
+```
+
+Security benefits:
+
+- Tenant isolation
+- Invoice isolation
+- UUID-based object naming
+- Protection against object enumeration
+- Prevention of cross-tenant object access
+
+### Filename Validation
+
+Uploaded filenames are sanitized before storage.
+
+The storage layer:
+
+- Rejects path traversal attempts (`../`)
+- Rejects invalid filenames
+- Removes null bytes
+- Sanitizes special characters
+- Truncates excessively long filenames
+
+Examples:
+
+```text
+../../etc/passwd        -> rejected
+..\..\windows\system32 -> rejected
+invoice.pdf            -> accepted
+```
+
+### Tenant and Invoice Validation
+
+Tenant IDs and invoice IDs are validated before key generation.
+
+Allowed characters:
+
+```text
+a-z
+A-Z
+0-9
+_
+-
+```
+
+Rejected examples:
+
+```text
+../../admin
+tenant/admin
+inv/123
+```
+
+### MIME Type Validation
+
+Supported invoice file types:
+
+- application/pdf
+- image/jpeg
+- image/png
+- image/tiff
+
+Validation occurs during:
+
+- Direct uploads
+- Presigned URL generation
+
+Unsupported MIME types are rejected before any storage operation occurs.
+
+### File Size Limits
+
+Invoice uploads are limited by:
+
 ```bash
-curl -H "Authorization: Bearer <token>" \
-     "http://localhost:3001/api/invest/opportunities?page=1&limit=10"
+BODY_LIMIT_INVOICE
 ```
 
-**Example response (200):**
-```json
-{
-  "data": [
-    {
-      "invoiceId": "inv_001",
-      "fundedBpsOfTarget": 2500,
-      "maturityAt": "2026-06-15T00:00:00.000Z",
-      "yieldBpsDisplay": 850,
-      "onChain": {
-        "escrowAddress": "CA3D...V9B",
-        "ledgerIndex": null,
-        "status": "active",
-        "fundedAmount": 25000,
-        "legal_hold": false
-      }
-    }
-  ],
-  "meta": {
-    "total": 1,
-    "page": 1,
-    "limit": 10,
-    "totalPages": 1
-  },
-  "message": "Investment opportunities retrieved successfully."
-}
+Default:
+
+```text
+512 KB
 ```
 
----
+Files exceeding the configured limit are rejected.
+
+### Presigned URL Expiry Limits
+
+Upload URLs:
+
+```text
+15 minutes
+```
+
+Download URLs:
+
+```text
+Default: 1 hour
+Maximum: 24 hours
+```
+
+Requests outside the allowed expiry range are rejected.
+
+### Security Controls
+
+The invoice upload subsystem includes:
+
+- Path traversal protection
+- MIME type allow-listing
+- File size enforcement
+- Tenant isolation
+- Invoice isolation
+- UUID object naming
+- Presigned URL expiry limits
+- AWS credential non-disclosure
+- Server-side validation before S3 operations
 
 Core routes currently covered:
 
