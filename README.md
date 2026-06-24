@@ -59,6 +59,24 @@ Optional Sentry error tracking is supported through the `SENTRY_DSN` environment
 - API keys and secret values
 - Stellar XDR / Stellar-specific payloads
 
+### Health endpoints
+
+| Endpoint | Type | Dependencies checked | Response |
+|----------|------|---------------------|----------|
+| `GET /health` | Liveness | None (process alive) | 200 `{ status: "ok" }` |
+| `GET /healthz` | Liveness | None (Kubernetes convention alias) | 200 `{ status: "ok" }` |
+| `GET /ready` | Readiness | Soroban RPC, KYC provider, indexer staleness | 200/503 with per-check detail |
+| `GET /readyz` | Readiness | **Critical:** DB (via knex `SELECT 1`), Soroban RPC | 200/503 with per-check detail |
+
+The `/readyz` probe is designed for orchestrated deployments (Kubernetes, Nomad, etc.)
+to distinguish "process is alive" from "process is ready to serve traffic".
+
+- Liveness probes (`/health`, `/healthz`) never touch external dependencies.
+- Readiness probe (`/readyz`) only checks critical upstream dependencies (DB, Soroban RPC).
+- Credentials and internal hostnames are stripped from error responses.
+
+Health state is also surfaced as a Prometheus gauge (`readiness_gauge`).
+
 Environment variables:
 
 - `SENTRY_DSN` — Optional Sentry DSN. Example: `https://<PUBLIC_KEY>@o<ORG_ID>.ingest.sentry.io/<PROJECT_ID>`

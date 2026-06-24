@@ -6,7 +6,8 @@
  */
 
 const { getKycProviderConfig } = require('./kycService');
-const { escrowIndexerLastCursorAdvanceTimestampSeconds } = require('../metrics');
+const { escrowIndexerLastCursorAdvanceTimestampSeconds, readinessGauge } = require('../metrics');
+const db = require('../db/knex');
 const cfg = require('../config');
 
 /**
@@ -45,14 +46,25 @@ async function checkSorobanHealth() {
 }
 
 /**
- * Checks if the database is reachable.
+ * Checks if the database is reachable via a raw query.
+ * Uses knex to run `SELECT 1` and measures latency.
+ * Does not expose connection strings or hostnames in the response.
  * @returns {Promise<{status: string, latency?: number, error?: string}>}
  */
 async function checkDatabaseHealth() {
   if (!process.env.DATABASE_URL) {
     return { status: 'not_configured' };
   }
-  return { status: 'not_implemented', error: 'Database health check pending' };
+
+  const start = Date.now();
+  try {
+    await db.raw('SELECT 1');
+    const latency = Date.now() - start;
+    return { status: 'healthy', latency };
+  } catch (_error) {
+    const latency = Date.now() - start;
+    return { status: 'unhealthy', latency, error: 'Database unreachable' };
+  }
 }
 
 /**
@@ -195,4 +207,36 @@ async function performHealthChecks() {
   return { healthy, checks };
 }
 
-module.exports = { checkSorobanHealth, checkDatabaseHealth, checkKycHealth, checkIndexerStaleness, performHealthChecks };
+/**
+ * Performs critical-dependency readiness checks (DB, Soroban RPC).
+ * The KYC and indexer checks are omitted because they are not required
+ * for the process to serve traffic — only critical upstream dependencies
+ * that would prevent any request from completing are included.
+ *
+ * Updates the `readiness_gauge` Prometheus metric (1 = ready, 0 = not ready).
+ *
+ * @returns {Promise<{healthy: boolean, checks: {database: Object, soroban: Object}}>}
+ */
+async function performReadinessChecks() {
+  const [database, soroban] = await Promise.all([
+    checkDatabaseHealth(),
+    checkSorobanHealth(),
+  ]);
+
+  const checks = { database, soroban };
+  const healthy =
+    database.status === 'healthy' &&
+    (soroban.status === 'healthy' || soroban.status === 'unknown');
+
+  readinessGauge.set(healthy ? 1 : 0);
+  return { healthy, checks };
+}
+
+module.exports = {
+  checkSorobanHealth,
+  checkDatabaseHealth,
+  checkKycHealth,
+  checkIndexerStaleness,
+  performHealthChecks,
+  performReadinessChecks,
+};

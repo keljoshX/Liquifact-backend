@@ -32,7 +32,7 @@ const {
   payloadTooLargeHandler,
   urlencodedBodyLimit,
 } = require('./middleware/bodySizeLimits');
-const { performHealthChecks } = require('./services/health');
+const { performHealthChecks, performReadinessChecks } = require('./services/health');
 const responseHelper = require('./utils/responseHelper');
 const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
@@ -120,7 +120,9 @@ function createApp() {
 
   // ── 4. Routes ────────────────────────────────────────────────────────────
 
-  // Health check (liveness probe)
+  // ── Health / Liveness / Readiness ──────────────────────────────────────
+
+  // Liveness probe — no external dependencies
   app.get('/health', (req, res) => {
     res.json({
       status: 'ok',
@@ -130,10 +132,42 @@ function createApp() {
     });
   });
 
-  // Readiness check (dependency-aware)
+  // Liveness alias (Kubernetes convention)
+  app.get('/healthz', (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'liquifact-api',
+      version: '0.1.0',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Full health check (all dependencies)
   app.get('/ready', async (req, res) => {
     try {
       const { healthy, checks } = await performHealthChecks();
+      const status = healthy ? 200 : 503;
+
+      res.status(status).json({
+        ready: healthy,
+        service: 'liquifact-api',
+        timestamp: new Date().toISOString(),
+        checks,
+      });
+    } catch (error) {
+      res.status(503).json({
+        ready: false,
+        service: 'liquifact-api',
+        timestamp: new Date().toISOString(),
+        error: error.message,
+      });
+    }
+  });
+
+  // Readiness probe (critical deps only: DB, Soroban RPC)
+  app.get('/readyz', async (req, res) => {
+    try {
+      const { healthy, checks } = await performReadinessChecks();
       const status = healthy ? 200 : 503;
 
       res.status(status).json({
@@ -159,7 +193,9 @@ function createApp() {
       description: 'Global Invoice Liquidity Network on Stellar',
       endpoints: {
         health: 'GET /health',
+        healthz: 'GET /healthz',
         ready: 'GET /ready',
+        readyz: 'GET /readyz',
         invoices: 'GET/POST /api/invoices',
         escrow: 'GET /api/escrow/:invoiceId',
         marketplace: 'GET /api/marketplace',

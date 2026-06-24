@@ -47,6 +47,25 @@ volumes:
   redis_data:
     driver: local
 
+  # Uncomment below to add the API service with healthcheck:
+  # api:
+  #   build: .
+  #   ports:
+  #     - "3001:3001"
+  #   environment:
+  #     NODE_ENV: development
+  #     DATABASE_URL: postgres://liquifact_user:liquifact_dev_password@postgres:5432/liquifact
+  #     SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+  #   healthcheck:
+  #     test: ["CMD", "node", "-e", "fetch('http://localhost:3001/readyz').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+
 networks:
   liquifact-network:
     driver: bridge
