@@ -198,6 +198,11 @@ function _stubbedResult(escrowAddress) {
  * Custom error class for escrow submission failures.
  */
 class EscrowSubmitError extends Error {
+  /**
+   * Creates an instance of EscrowSubmitError.
+   *
+   * @param {string} message - The error message.
+   */
   constructor(message) {
     super(message);
     this.name = 'EscrowSubmitError';
