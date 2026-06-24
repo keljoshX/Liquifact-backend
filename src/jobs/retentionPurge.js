@@ -204,14 +204,23 @@ async function createJobExecution(executionData) {
  * @param {Object} updateData - Update data
  */
 async function updateJobExecution(executionId, updateData) {
-  await db('retention_job_executions')
-    .where('id', executionId)
-    .update({
-      ...updateData,
-      completed_at: updateData.status === 'completed' || updateData.status === 'failed' 
-        ? new Date() 
-        : undefined
-    });
+  try {
+    const result = await db('retention_job_executions')
+      .where('id', executionId)
+      .update({
+        ...updateData,
+        completed_at: updateData.status === 'completed' || updateData.status === 'failed' 
+          ? new Date() 
+          : undefined
+      });
+    return result;
+  } catch (error) {
+    logger.error({ 
+      executionId, 
+      error: error.message 
+    }, 'Failed to update job execution');
+    throw error;
+  }
 }
 
 /**
