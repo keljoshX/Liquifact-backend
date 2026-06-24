@@ -21,6 +21,8 @@ const {
   persistKycRecord,
   readKycRecord,
 } = require('../src/services/kycService');
+const { createSignatureHeader } = require('../src/services/webhooks');
+const kycRoutes = require('../src/routes/kyc');
 
 const originalFetch = global.fetch;
 
@@ -271,5 +273,121 @@ describe('verifyWithExternalProvider', () => {
     expect(opts.headers['X-KYC-Secret']).toBe('my-secret');
 
     delete process.env.KYC_PROVIDER_SECRET;
+  });
+});
+
+describe('KYC webhook route', () => {
+  let app;
+
+  beforeEach(() => {
+    app = require('express')();
+    app.use(require('express').raw({ type: 'application/json', limit: '100kb' }));
+    app.use('/api/kyc', kycRoutes);
+  });
+
+  it('accepts valid signed webhook payload and persists the record', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-webhook-01',
+      status: 'approved',
+      recordId: 'rec_webhook_01',
+      verifiedAt: '2026-06-24T12:00:00.000Z',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const where = jest.fn().mockReturnThis();
+    const first = jest.fn().mockResolvedValue(null);
+    const insert = jest.fn().mockResolvedValue([1]);
+    const update = jest.fn().mockResolvedValue(1);
+
+    db.mockImplementation(() => ({ where, first, insert, update }));
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.status).toBe('verified');
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ sme_id: 'sme-webhook-01' }));
+  });
+
+  it('rejects webhook with invalid signature', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-webhook-02',
+      status: 'approved',
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', 't=123,v1=deadbeef')
+      .send(rawBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Invalid webhook signature/);
+  });
+
+  it('rejects webhook with unknown provider status', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-webhook-03',
+      status: 'mystery_status',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider status/);
+  });
+
+  it('accepts repeated webhook deliveries without failing', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-webhook-04',
+      status: 'approved',
+      recordId: 'rec_webhook_04',
+      verifiedAt: '2026-06-24T12:00:00.000Z',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const where = jest.fn().mockReturnThis();
+    const first = jest.fn().mockResolvedValue({ sme_id: 'sme-webhook-04' });
+    const insert = jest.fn();
+    const update = jest.fn().mockResolvedValue(1);
+
+    db.mockImplementation(() => ({ where, first, insert, update }));
+
+    const firstResponse = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    const secondResponse = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(update).toHaveBeenCalled();
   });
 });

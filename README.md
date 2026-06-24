@@ -87,6 +87,25 @@ Do not store secrets in source control. Use `.env` locally and deployment secret
 
 ---
 
+## KYC Provider Integration
+
+This backend supports an optional external KYC provider adapter. When `KYC_PROVIDER_URL` and `KYC_PROVIDER_API_KEY` are both configured, the service submits verification requests to the provider and maps provider statuses onto internal `KYC_STATUSES`:
+
+- `pending`
+- `verified`
+- `rejected`
+- `exempted`
+
+Incoming provider status updates are ingested through a signed webhook endpoint:
+
+- `POST /api/kyc/webhook`
+
+The webhook verifies the `X-Signature` HMAC signature using `KYC_PROVIDER_SECRET` before persisting the SME record.
+
+When no provider keys are present, the service gracefully falls back to the in-memory mock provider behavior used for local development and tests.
+
+---
+
 ## Stellar Network Configuration
 
 The API enforces a strict matching between `STELLAR_NETWORK` and `SOROBAN_RPC_URL` at boot time. This prevents misconfiguration where a passphrase (network identity) is paired with an incompatible RPC endpoint, which would cause on-chain validation failures.

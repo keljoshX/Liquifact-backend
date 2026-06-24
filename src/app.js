@@ -46,6 +46,7 @@ const marketplaceRoutes = require('./routes/marketplace');
 const retentionRoutes = require('./routes/retention');
 const invoiceStateRoutes = require('./routes/invoiceStateRoutes');
 const adminEscrowRoutes = require('./routes/adminEscrow');
+const kycRoutes = require('./routes/kyc');
 const v1Routes = require('./routes/v1');
 
 /**
@@ -116,11 +117,15 @@ function createApp() {
   // ── 1. CORS ──────────────────────────────────────────────────────────────
   app.use(cors(createCorsOptions()));
 
+  // ── 1.a. KYC webhook raw body parser ──────────────────────────────────────
+  // Incoming provider webhooks must be verified against the raw JSON body.
+  app.use('/api/kyc/webhook', express.raw({ type: 'application/json', limit: '100kb' }));
+
   // ── 2 & 3. Body-size guardrails ──────────────────────────────────────────
   app.use(...jsonBodyLimit());
   app.use(...urlencodedBodyLimit());
 
-// Apply security headers middleware
+  // Apply security headers middleware
   app.use(createSecurityMiddleware());
   app.use(auditMiddleware);
 
@@ -306,6 +311,7 @@ function createApp() {
   app.use('/api/invoices', invoiceFileRoutes);
   app.use('/api/invoices', invoiceStateRoutes);
   app.use('/api/invest', investRoutes);
+  app.use('/api/kyc', kycRoutes);
   app.use('/api/marketplace', marketplaceRoutes);
   app.use('/api/retention', retentionRoutes);
   app.use('/api/admin/audit', auditTrailRoutes);
