@@ -221,8 +221,17 @@ function validateMarketplaceQueryParams(query) {
     }
   }
 
-  // Validate pagination
-  if (page !== undefined) {
+  // Validate cursor (opaque base64url.signature string)
+  if (cursor !== undefined) {
+    if (typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 2048) {
+      validatedParams.pagination.cursor = cursor;
+    } else {
+      errors.push('cursor must be a non-empty string (max 2048 chars)');
+    }
+  }
+
+  // Validate pagination — page is ignored when a cursor is present
+  if (cursor === undefined && page !== undefined) {
     const val = parseInt(page);
     if (!isNaN(val) && val >= 1) {
       validatedParams.pagination.page = val;
