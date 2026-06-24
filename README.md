@@ -188,6 +188,55 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
+### Invest
+
+`GET /api/invest/opportunities` — Returns a paginated list of publicly investable invoices enriched with on-chain escrow state.
+
+Only invoices with a status of `verified` or `partially_funded` are exposed. On-chain reads that fail for individual invoices are silently skipped — the endpoint returns 200 even when batch reads encounter errors.
+
+**Query Parameters:**
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| `page` | integer | `1` | Page number (1-based) |
+| `limit` | integer | `20` | Items per page (max 100) |
+
+**Example request:**
+```bash
+curl -H "Authorization: Bearer <token>" \
+     "http://localhost:3001/api/invest/opportunities?page=1&limit=10"
+```
+
+**Example response (200):**
+```json
+{
+  "data": [
+    {
+      "invoiceId": "inv_001",
+      "fundedBpsOfTarget": 2500,
+      "maturityAt": "2026-06-15T00:00:00.000Z",
+      "yieldBpsDisplay": 850,
+      "onChain": {
+        "escrowAddress": "CA3D...V9B",
+        "ledgerIndex": null,
+        "status": "active",
+        "fundedAmount": 25000,
+        "legal_hold": false
+      }
+    }
+  ],
+  "meta": {
+    "total": 1,
+    "page": 1,
+    "limit": 10,
+    "totalPages": 1
+  },
+  "message": "Investment opportunities retrieved successfully."
+}
+```
+
+---
+
 Core routes currently covered:
 
 - Health: `GET /health`
