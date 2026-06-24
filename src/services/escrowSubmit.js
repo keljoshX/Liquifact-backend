@@ -30,7 +30,6 @@
 const {
   Contract,
   TransactionBuilder,
-  Networks,
   BASE_FEE,
   nativeToScVal,
   Address,
@@ -137,6 +136,11 @@ async function submitFundEscrow({ escrowAddress, investorAddress, amountStroops,
 /**
  * Sign with the platform secret and broadcast. Secret is only held in memory
  * for the duration of this function call.
+ *
+ * @param {import('@stellar/stellar-sdk').Transaction} preparedTx - The prepared transaction.
+ * @param {import('@stellar/stellar-sdk/rpc').Server} server - The Soroban RPC server instance.
+ * @param {string} escrowAddress - The contract address of the escrow.
+ * @returns {Promise<EscrowSubmitResult>} The submission result.
  */
 async function _signAndSubmit(preparedTx, server, escrowAddress) {
   const secret = process.env.ESCROW_PLATFORM_SECRET;
@@ -174,6 +178,12 @@ async function _signAndSubmit(preparedTx, server, escrowAddress) {
   };
 }
 
+/**
+ * Generates a stubbed result for testing/staging environments.
+ *
+ * @param {string} escrowAddress - The contract address.
+ * @returns {EscrowSubmitResult} The stubbed result.
+ */
 function _stubbedResult(escrowAddress) {
   return {
     status: 'stubbed',
@@ -184,6 +194,9 @@ function _stubbedResult(escrowAddress) {
   };
 }
 
+/**
+ * Custom error class for escrow submission failures.
+ */
 class EscrowSubmitError extends Error {
   constructor(message) {
     super(message);
