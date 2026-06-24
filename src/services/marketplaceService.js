@@ -127,30 +127,29 @@ async function getMarketplaceInvoices({ tenantId, queryParams }) {
     : 'created_at';
   const order = (sorting.order === 'asc') ? 'asc' : 'desc';
 
-  // ── Base query (tenant-scoped, visibility-filtered) ──────────────────────
+  // ── Base query factory (tenant-scoped, visibility-filtered) ─────────────
   const baseQuery = () =>
     db('invoices')
       .whereNull('deleted_at')
       .where('tenant_id', tenantId)
       .whereIn('status', PUBLIC_INVESTABLE_INVOICE_STATUSES);
 
-  // ── Total count (always offset-independent) ──────────────────────────────
+  // ── Total count (filter-aware, always offset-independent) ────────────────
   let countQ = baseQuery();
   _applyFilters(countQ, filters);
   const countRow = await countQ.count('* as total').first();
   const total = parseInt(countRow.total ?? countRow['count(*)'] ?? 0);
 
-  // ── Data query ────────────────────────────────────────────────────────────
-  let dataQ = baseQuery().select('*');
-  _applyFilters(dataQ, filters);
-
   const useCursor = Boolean(pagination.cursor);
 
+  // ── Cursor-based keyset pagination ────────────────────────────────────────
   if (useCursor) {
-    // Cursor-based keyset pagination
     // decodeCursor validates HMAC and sort-field match; throws CursorError on failure.
     const decoded = decodeCursor(pagination.cursor, sortField);
     const { sortValue, id: lastId } = decoded;
+
+    let dataQ = baseQuery().select('*');
+    _applyFilters(dataQ, filters);
 
     // Keyset predicate:
     //   ASC:  (sortField > lastValue) OR (sortField = lastValue AND id > lastId)
@@ -162,47 +161,19 @@ async function getMarketplaceInvoices({ tenantId, queryParams }) {
           this.where(sortField, '=', sortValue).where('id', gtOp, lastId);
         });
     });
-  }
 
-  // Apply sort: primary on sortField, secondary tiebreaker on id
-  dataQ.orderBy(sortField, order).orderBy('id', order);
+    // Primary sort on sortField, secondary tiebreaker on id
+    dataQ.orderBy(sortField, order).orderBy('id', order);
 
-  // Fetch one extra row to determine `hasMore`
-  const rows = await dataQ.limit(limit + 1);
+    // Fetch one extra row to determine hasMore without a second COUNT query
+    const rows = await dataQ.limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-
-  // Build nextCursor from last item in the returned page (if there is a next page)
-  let nextCursor = null;
-  if (hasMore && data.length > 0) {
-    const lastRow = data[data.length - 1];
-    nextCursor = encodeCursor({
-      sortField,
-      sortValue: lastRow[sortField],
-      id: lastRow.id,
-    });
-  }
-
-  // ── Offset fallback (legacy mode) ─────────────────────────────────────────
-  if (!useCursor) {
-    const page = Math.max(1, parseInt(pagination.page) || 1);
-    const offset = (page - 1) * limit;
-    const pagedRows = await baseQuery()
-      .select('*')
-      .where(qb => { _applyFilters(qb, filters); })
-      .orderBy(sortField, order)
-      .orderBy('id', order)
-      .limit(limit + 1)
-      .offset(offset);
-
-    const pagedHasMore = pagedRows.length > limit;
-    const pagedData = pagedHasMore ? pagedRows.slice(0, limit) : pagedRows;
-
-    let pagedNextCursor = null;
-    if (pagedHasMore && pagedData.length > 0) {
-      const lastRow = pagedData[pagedData.length - 1];
-      pagedNextCursor = encodeCursor({
+    let nextCursor = null;
+    if (hasMore && data.length > 0) {
+      const lastRow = data[data.length - 1];
+      nextCursor = encodeCursor({
         sortField,
         sortValue: lastRow[sortField],
         id: lastRow.id,
@@ -210,25 +181,47 @@ async function getMarketplaceInvoices({ tenantId, queryParams }) {
     }
 
     return {
-      data: pagedData,
+      data,
       meta: {
         total,
-        page,
         limit,
-        totalPages: Math.ceil(total / limit),
-        hasMore: pagedHasMore,
-        nextCursor: pagedNextCursor,
+        hasMore,
+        nextCursor,
       },
     };
   }
 
+  // ── Offset-based pagination (legacy, backward-compatible) ─────────────────
+  const page = Math.max(1, parseInt(pagination.page) || 1);
+  const offset = (page - 1) * limit;
+
+  let dataQ = baseQuery().select('*');
+  _applyFilters(dataQ, filters);
+  dataQ.orderBy(sortField, order).orderBy('id', order);
+
+  const pagedRows = await dataQ.limit(limit + 1).offset(offset);
+  const pagedHasMore = pagedRows.length > limit;
+  const pagedData = pagedHasMore ? pagedRows.slice(0, limit) : pagedRows;
+
+  let pagedNextCursor = null;
+  if (pagedHasMore && pagedData.length > 0) {
+    const lastRow = pagedData[pagedData.length - 1];
+    pagedNextCursor = encodeCursor({
+      sortField,
+      sortValue: lastRow[sortField],
+      id: lastRow.id,
+    });
+  }
+
   return {
-    data,
+    data: pagedData,
     meta: {
       total,
+      page,
       limit,
-      hasMore,
-      nextCursor,
+      totalPages: Math.ceil(total / limit),
+      hasMore: pagedHasMore,
+      nextCursor: pagedNextCursor,
     },
   };
 }
