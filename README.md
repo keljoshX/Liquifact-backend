@@ -188,6 +188,19 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
+### Contract Tests
+
+Contract tests validate route responses against the generated OpenAPI schemas.
+
+Coverage includes:
+
+- Success response envelopes
+- RFC 7807 problem responses
+- Missing required fields
+- Undocumented response fields
+
+The generated OpenAPI specification remains the single source of truth.
+
 ## Invoice Upload Security
 
 LiquiFact uses tenant-scoped object storage and strict validation controls for invoice uploads.
