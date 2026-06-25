@@ -59,6 +59,40 @@ Optional Sentry error tracking is supported through the `SENTRY_DSN` environment
 - API keys and secret values
 - Stellar XDR / Stellar-specific payloads
 
+### Prometheus metrics endpoint (`GET /metrics`)
+
+The `/metrics` endpoint exposes Prometheus-formatted metrics via a dedicated route handler at `GET /metrics`. It is **never** served to unauthenticated or non-loopback clients.
+
+#### Auth strategy (in priority order)
+
+1. **Bearer token configured** — If `METRICS_BEARER_TOKEN` is set, every request **must** carry an `Authorization: Bearer <token>` header. The comparison uses a **constant-time** algorithm (`safeEqual`) to prevent timing side-channel attacks.
+2. **No token (private-network mode)** — If `METRICS_BEARER_TOKEN` is unset, only requests originating from loopback addresses (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`) are allowed. This is suitable for Prometheus scrapers running on the same host.
+3. **All other requests** receive a uniform `401 Unauthorized` response with **no** indication of whether the failure was a missing token, wrong token, or non-loopback origin.
+
+#### Security: trusted-proxy & `X-Forwarded-For` spoofing
+
+Loopback detection reads the **direct TCP connection address** from `req.socket.remoteAddress`. The `X-Forwarded-For` header is **never** consulted, so a remote attacker cannot spoof a loopback origin by setting `X-Forwarded-For: 127.0.0.1`.
+
+There is no `app.set('trust proxy', ...)` call in this application. If one is added in the future (which would cause `req.ip` to resolve from `X-Forwarded-For` values), the middleware **already** ignores `req.ip` for loopback checks and reads the socket directly, making it resilient to such configuration changes.
+
+#### Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `METRICS_BEARER_TOKEN` | No | unset | Static bearer token for `/metrics`. Generate with `openssl rand -hex 32`. When unset, only loopback is allowed. |
+
+#### Tested behaviour
+
+- ✅ Valid bearer token → 200
+- ✅ Missing `Authorization` header → 401 (uniform body)
+- ✅ Wrong token → 401 (uniform body, indistinguishable from missing)
+- ✅ Basic auth → 401 (non-Bearer scheme)
+- ✅ Loopback with no token → 200
+- ✅ Non-loopback with no token → 401
+- ✅ `X-Forwarded-For: 127.0.0.1` from non-loopback socket → **blocked** (spoof rejected)
+- ✅ `::1` and `::ffff:127.0.0.1` loopback variants → 200
+- ✅ Authorization header casing (`authorization`, `Authorization`, `AUTHORIZATION`) → all accepted
+
 ### Health endpoints
 
 | Endpoint | Type | Dependencies checked | Response |
