@@ -42,7 +42,11 @@ const sharedBreaker = new CircuitBreaker({
   failureThreshold: parseInt(process.env.SOROBAN_CB_FAILURE_THRESHOLD || '5', 10),
   recoveryTimeout: parseInt(process.env.SOROBAN_CB_RECOVERY_TIMEOUT || '10000', 10),
   onStateChange: (oldState, newState) => {
-    if (metrics && metrics.sorobanCircuitBreakerStateTransitionsTotal) {
+    if (
+      metrics &&
+      metrics.sorobanCircuitBreakerStateTransitionsTotal &&
+      typeof metrics.sorobanCircuitBreakerStateTransitionsTotal.labels === 'function'
+    ) {
       metrics.sorobanCircuitBreakerStateTransitionsTotal.labels(newState).inc();
     }
   }
