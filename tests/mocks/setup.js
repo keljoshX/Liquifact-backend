@@ -47,7 +47,6 @@ jest.mock('../../src/db/knex', () => {
 
     return Promise.resolve(inserted);
   });
-  });
   m.update = jest.fn().mockReturnThis();
   m.del = jest.fn(() => {
     auditLogEvents.length = 0;

@@ -361,6 +361,7 @@ The invoice upload subsystem includes:
 - Presigned URL expiry limits
 - AWS credential non-disclosure
 - Server-side validation before S3 operations
+- Prototype pollution prevention — `sanitizeValue` in `src/utils/sanitization.js` recursively strips `__proto__`, `constructor`, and `prototype` keys from every object and array in request body, query, and params before any downstream handler or Knex query sees the data. Depth and string-length caps bound processing cost for adversarially deep payloads.
 
 Core routes currently covered:
 
