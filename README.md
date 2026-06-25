@@ -87,6 +87,54 @@ Do not store secrets in source control. Use `.env` locally and deployment secret
 
 ---
 
+## CORS Configuration
+
+The API enforces a strict CORS policy via the `src/config/cors.js` module. The allowlist
+is built from the `CORS_ORIGINS` environment variable (comma-separated list of exact origins;
+`CORS_ALLOWED_ORIGINS` is also accepted for backward compatibility).
+
+### Exact-match semantics
+
+Only origins that appear verbatim in the configured list are permitted. **Wildcard patterns
+(`*`) are never used** — every origin is checked for an exact match against the allowlist.
+Requests without an `Origin` header (e.g. curl, server-to-server) are always passed through.
+
+### Environment-aware defaults
+
+| Condition | Behaviour |
+|-----------|-----------|
+| `NODE_ENV=development` and no `CORS_ORIGINS` set | A hard-coded set of localhost origins is allowed (`http://localhost:3000`, `http://localhost:3001`, `http://localhost:5173`, `http://127.0.0.1:3000`, `http://127.0.0.1:5173`) |
+| `NODE_ENV=production` and no `CORS_ORIGINS` set | Every browser origin is denied — the server returns 403 for any `Origin` header |
+| `CORS_ORIGINS` set (any environment) | Only the explicitly listed origins are allowed |
+
+### Preflight caching (`CORS_MAX_AGE`)
+
+The `Access-Control-Max-Age` response header on preflight (`OPTIONS`) requests is
+configurable via the `CORS_MAX_AGE` environment variable (value in seconds).
+
+- **Default**: `600` (10 minutes)
+- If unset, empty, or not a valid positive integer, the default is used.
+
+### Hot-reloadable allowlist
+
+The `reloadCorsOrigins()` function (exported from `src/config/cors.js`) re-reads
+`CORS_ORIGINS` from `process.env` and replaces the internal allowlist **without
+restarting the server**. Already-connected CORS middleware instances reflect the
+new origins immediately for subsequent requests.
+
+This function can be wired into an admin endpoint (e.g. `POST /api/admin/cors/reload`)
+or a config-file watcher. The reload mechanism itself is intentionally outside the
+scope of this module — `reloadCorsOrigins()` provides the primitive for whichever
+orchestration layer you choose.
+
+### Disallowed-origin errors
+
+Blocked origins receive a 403 Forbidden response with a dedicated `Error` object
+whose `.isCorsOriginRejected` flag is `true`. Downstream error handlers can use the
+`isCorsOriginRejectedError()` helper exported from the module to detect this case.
+
+---
+
 ## Stellar Network Configuration
 
 The API enforces a strict matching between `STELLAR_NETWORK` and `SOROBAN_RPC_URL` at boot time. This prevents misconfiguration where a passphrase (network identity) is paired with an incompatible RPC endpoint, which would cause on-chain validation failures.
