@@ -20,19 +20,21 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const { callSorobanContract } = require('./services/soroban');
+const { createSecurityMiddleware } = require('./middleware/security');
+const { auditMiddleware } = require('./middleware/audit');
 const invoiceService = require('./services/invoiceService');
 const { resolveEscrowAddress } = require('./config/escrowMap');
 const { getEscrowStateWithProjection } = require('./services/escrowRead');
 const { createCorsOptions, isCorsOriginRejectedError } = require('./config/cors');
-const { validateInvoiceQueryParams, validateInvoicePayload } = require('./utils/validators');
+const { validateInvoiceQueryParams } = require('./utils/validators');
+const { invoiceCreateSchema, parseValidationErrors } = require('./schemas/invoice');
 const {
   invoiceBodyLimit,
   jsonBodyLimit,
   payloadTooLargeHandler,
   urlencodedBodyLimit,
 } = require('./middleware/bodySizeLimits');
-const { performHealthChecks } = require('./services/health');
+const { performHealthChecks, performReadinessChecks } = require('./services/health');
 const responseHelper = require('./utils/responseHelper');
 const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
@@ -44,6 +46,7 @@ const marketplaceRoutes = require('./routes/marketplace');
 const retentionRoutes = require('./routes/retention');
 const invoiceStateRoutes = require('./routes/invoiceStateRoutes');
 const adminEscrowRoutes = require('./routes/adminEscrow');
+const kycRoutes = require('./routes/kyc');
 const v1Routes = require('./routes/v1');
 
 /**
@@ -114,13 +117,23 @@ function createApp() {
   // ── 1. CORS ──────────────────────────────────────────────────────────────
   app.use(cors(createCorsOptions()));
 
+  // ── 1.a. KYC webhook raw body parser ──────────────────────────────────────
+  // Incoming provider webhooks must be verified against the raw JSON body.
+  app.use('/api/kyc/webhook', express.raw({ type: 'application/json', limit: '100kb' }));
+
   // ── 2 & 3. Body-size guardrails ──────────────────────────────────────────
   app.use(...jsonBodyLimit());
   app.use(...urlencodedBodyLimit());
 
+  // Apply security headers middleware
+  app.use(createSecurityMiddleware());
+  app.use(auditMiddleware);
+
   // ── 4. Routes ────────────────────────────────────────────────────────────
 
-  // Health check (liveness probe)
+  // ── Health / Liveness / Readiness ──────────────────────────────────────
+
+  // Liveness probe — no external dependencies
   app.get('/health', (req, res) => {
     res.json({
       status: 'ok',
@@ -130,10 +143,42 @@ function createApp() {
     });
   });
 
-  // Readiness check (dependency-aware)
+  // Liveness alias (Kubernetes convention)
+  app.get('/healthz', (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'liquifact-api',
+      version: '0.1.0',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Full health check (all dependencies)
   app.get('/ready', async (req, res) => {
     try {
       const { healthy, checks } = await performHealthChecks();
+      const status = healthy ? 200 : 503;
+
+      res.status(status).json({
+        ready: healthy,
+        service: 'liquifact-api',
+        timestamp: new Date().toISOString(),
+        checks,
+      });
+    } catch (error) {
+      res.status(503).json({
+        ready: false,
+        service: 'liquifact-api',
+        timestamp: new Date().toISOString(),
+        error: error.message,
+      });
+    }
+  });
+
+  // Readiness probe (critical deps only: DB, Soroban RPC)
+  app.get('/readyz', async (req, res) => {
+    try {
+      const { healthy, checks } = await performReadinessChecks();
       const status = healthy ? 200 : 503;
 
       res.status(status).json({
@@ -159,7 +204,9 @@ function createApp() {
       description: 'Global Invoice Liquidity Network on Stellar',
       endpoints: {
         health: 'GET /health',
+        healthz: 'GET /healthz',
         ready: 'GET /ready',
+        readyz: 'GET /readyz',
         invoices: 'GET/POST /api/invoices',
         escrow: 'GET /api/escrow/:invoiceId',
         marketplace: 'GET /api/marketplace',
@@ -183,11 +230,17 @@ function createApp() {
 
   // Invoices — POST (create) with strict payload validation and 512 KB body limit
   app.post('/api/invoices', ...invoiceBodyLimit(), (req, res) => {
-    const { isValid, errors } = validateInvoicePayload(req.body);
+    const result = invoiceCreateSchema.safeParse(req.body);
 
-    if (!isValid) {
-      res.status(400).json({ errors });
-      return;
+    if (!result.success) {
+      const fieldErrors = parseValidationErrors(result.error);
+      return res.status(400).json({
+        type: 'https://liquifact.io/problems/validation-error',
+        title: 'Validation Error',
+        status: 400,
+        detail: 'Invoice payload contains invalid or missing fields.',
+        fieldErrors,
+      });
     }
 
     res.status(201).json({
@@ -258,6 +311,7 @@ function createApp() {
   app.use('/api/invoices', invoiceFileRoutes);
   app.use('/api/invoices', invoiceStateRoutes);
   app.use('/api/invest', investRoutes);
+  app.use('/api/kyc', kycRoutes);
   app.use('/api/marketplace', marketplaceRoutes);
   app.use('/api/retention', retentionRoutes);
   app.use('/api/admin/audit', auditTrailRoutes);

@@ -218,6 +218,17 @@ async function metricsHandler(_req, res) {
   res.end(await registry.metrics());
 }
 
+/**
+ * Gauge: Readiness state (1 = ready, 0 = not ready).
+ * Updated by performReadinessChecks() in the health service.
+ * @type {import('prom-client').Gauge}
+ */
+const readinessGauge = new client.Gauge({
+  name: 'readiness_gauge',
+  help: 'Readiness state of the service: 1 = ready to serve traffic, 0 = not ready',
+  registers: [registry],
+});
+
 module.exports = {
   registry,
   metricsAuth,
@@ -230,7 +241,5 @@ module.exports = {
   footprintCacheMissesTotal,
   footprintCacheEvictionsTotal,
   escrowReconciliationMismatches,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
+  readinessGauge,
 };

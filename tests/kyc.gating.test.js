@@ -205,6 +205,31 @@ describe('KYC Gating Middleware Tests', () => {
       expect(res.body.kyc.status).toBe('exempted');
     });
 
+    it('should resolve smeId only from the authenticated principal', async () => {
+      const smeId = 'sme_gate_auth_only';
+      await kycService.verifySmeSafe(smeId);
+
+      const authApp = express();
+      authApp.use(express.json());
+      authApp.use((req, res, next) => {
+        req.user = { sub: 'user_123', smeId };
+        req.id = 'req_123';
+        next();
+      });
+
+      authApp.post('/fund', requireKycForFunding, (req, res) => {
+        res.json({ success: true, kyc: req.kyc });
+      });
+
+      const res = await request(authApp)
+        .post('/fund')
+        .send({ smeId: 'sme_spoofed' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.kyc.smeId).toBe(smeId);
+      expect(res.body.kyc.smeId).not.toBe('sme_spoofed');
+    });
+
     it('should attach KYC info to request object', async () => {
       const smeId = 'sme_gate_attach_kyc';
       await kycService.verifySmeSafe(smeId);

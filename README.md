@@ -59,6 +59,24 @@ Optional Sentry error tracking is supported through the `SENTRY_DSN` environment
 - API keys and secret values
 - Stellar XDR / Stellar-specific payloads
 
+### Health endpoints
+
+| Endpoint | Type | Dependencies checked | Response |
+|----------|------|---------------------|----------|
+| `GET /health` | Liveness | None (process alive) | 200 `{ status: "ok" }` |
+| `GET /healthz` | Liveness | None (Kubernetes convention alias) | 200 `{ status: "ok" }` |
+| `GET /ready` | Readiness | Soroban RPC, KYC provider, indexer staleness | 200/503 with per-check detail |
+| `GET /readyz` | Readiness | **Critical:** DB (via knex `SELECT 1`), Soroban RPC | 200/503 with per-check detail |
+
+The `/readyz` probe is designed for orchestrated deployments (Kubernetes, Nomad, etc.)
+to distinguish "process is alive" from "process is ready to serve traffic".
+
+- Liveness probes (`/health`, `/healthz`) never touch external dependencies.
+- Readiness probe (`/readyz`) only checks critical upstream dependencies (DB, Soroban RPC).
+- Credentials and internal hostnames are stripped from error responses.
+
+Health state is also surfaced as a Prometheus gauge (`readiness_gauge`).
+
 Environment variables:
 
 - `SENTRY_DSN` — Optional Sentry DSN. Example: `https://<PUBLIC_KEY>@o<ORG_ID>.ingest.sentry.io/<PROJECT_ID>`
@@ -66,6 +84,25 @@ Environment variables:
 - `SENTRY_ENVIRONMENT` — Optional environment tag. Defaults to `NODE_ENV`.
 
 Do not store secrets in source control. Use `.env` locally and deployment secrets in production.
+
+---
+
+## KYC Provider Integration
+
+This backend supports an optional external KYC provider adapter. When `KYC_PROVIDER_URL` and `KYC_PROVIDER_API_KEY` are both configured, the service submits verification requests to the provider and maps provider statuses onto internal `KYC_STATUSES`:
+
+- `pending`
+- `verified`
+- `rejected`
+- `exempted`
+
+Incoming provider status updates are ingested through a signed webhook endpoint:
+
+- `POST /api/kyc/webhook`
+
+The webhook verifies the `X-Signature` HMAC signature using `KYC_PROVIDER_SECRET` before persisting the SME record.
+
+When no provider keys are present, the service gracefully falls back to the in-memory mock provider behavior used for local development and tests.
 
 ---
 
@@ -175,15 +212,41 @@ The API is documented using OpenAPI 3.0 specification.
 - **OpenAPI JSON**: `GET /openapi.json` - Machine-readable API specification
 - **Interactive Docs**: `GET /docs` - Swagger UI for exploring and testing the API
 - **Correlation Strategy**: See [`docs/invoice-correlation.md`](./docs/invoice-correlation.md) for details on how `invoiceId` correlates with on-chain Stellar and Soroban data.
+- **Signing Modes**: See [`docs/ops-signing.md`](./docs/ops-signing.md) for details on the escrow transaction signing modes (delegated, custodial, stubbed).
 
 The documentation covers all public endpoints including health checks, invoice management, escrow operations, and investment opportunities.
 
-- **Marketplace**: `GET /api/marketplace` - Search and sort invoices by yield, maturity, and funded ratio. Supports advanced filtering (`yieldBpsMin`, `maturityDateTo`, `fundedRatioMin`, etc.) and pagination.
+- **Marketplace**: `GET /api/marketplace` - Search and sort invoices by yield, maturity, and funded ratio. Supports advanced filtering (`yieldBpsMin`, `maturityDateTo`, `fundedRatioMin`, etc.) and both **cursor-based** and offset pagination.
 
-**Example:**
+  **Cursor pagination (recommended)** — stable under inserts/deletes; use the `nextCursor` value from one response as the `cursor` param in the next request. Cursors are opaque and HMAC-signed; any modification returns 400.
+
+  **Offset pagination (legacy)** — use `page` + `limit` as before. `nextCursor` and `hasMore` are also returned so clients can migrate incrementally.
+
+  | Param | Mode | Description |
+  |---|---|---|
+  | `cursor` | Cursor | Opaque cursor from previous `nextCursor`; invalidates `page` |
+  | `limit` | Both | Page size (1–100, default 10) |
+  | `page` | Offset | 1-based page number (ignored when `cursor` present) |
+  | `sortBy` | Both | `yield_bps` \| `maturity_date` \| `funded_ratio` \| `amount` \| `created_at` |
+  | `order` | Both | `asc` \| `desc` (must be consistent across pages in cursor mode) |
+
+**Example — first page (cursor mode):**
 ```bash
 curl -H "Authorization: Bearer <token>" \
-     "http://localhost:3001/api/marketplace?yieldBpsMin=500&sortBy=yield_bps&order=desc"
+     "http://localhost:3001/api/marketplace?sortBy=yield_bps&order=desc&limit=10"
+# Response meta: { total, limit, hasMore, nextCursor }
+```
+
+**Example — next page:**
+```bash
+curl -H "Authorization: Bearer <token>" \
+     "http://localhost:3001/api/marketplace?sortBy=yield_bps&order=desc&limit=10&cursor=<nextCursor>"
+```
+
+**Example — with filters (offset mode):**
+```bash
+curl -H "Authorization: Bearer <token>" \
+     "http://localhost:3001/api/marketplace?yieldBpsMin=500&sortBy=yield_bps&order=desc&page=2&limit=10"
 ```
 
 ---
@@ -318,6 +381,7 @@ The invoice upload subsystem includes:
 - Presigned URL expiry limits
 - AWS credential non-disclosure
 - Server-side validation before S3 operations
+- Prototype pollution prevention — `sanitizeValue` in `src/utils/sanitization.js` recursively strips `__proto__`, `constructor`, and `prototype` keys from every object and array in request body, query, and params before any downstream handler or Knex query sees the data. Depth and string-length caps bound processing cost for adversarially deep payloads.
 
 Core routes currently covered:
 

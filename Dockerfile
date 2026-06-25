@@ -21,9 +21,9 @@ ENV PORT=3001
 # Expose the API port
 EXPOSE 3001
 
-# Healthcheck to ensure the container is ready
+# Healthcheck — uses the readiness probe to verify the container can serve traffic
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://localhost:3001/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://localhost:3001/readyz').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
 
 # Start the application
 CMD ["node", "src/index.js"]

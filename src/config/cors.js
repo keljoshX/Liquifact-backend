@@ -38,6 +38,14 @@ const DEV_DEFAULT_ORIGINS = [
 ];
 
 /**
+ * Default preflight max-age in seconds (10 minutes). Used when
+ * `CORS_MAX_AGE` is unset or contains an invalid value.
+ *
+ * @type {number}
+ */
+const DEFAULT_MAX_AGE = 600;
+
+/**
  * Returns the hard-coded development fallback origin list.
  *
  * @returns {string[]} Array of development-safe origins.
@@ -123,11 +131,91 @@ function isCorsOriginRejectedError(err) {
 }
 
 /**
+ * Parses the `CORS_MAX_AGE` environment variable and returns a validated
+ * positive integer suitable for the `maxAge` option of the `cors` package.
+ *
+ * Defaults to {@link DEFAULT_MAX_AGE} (600 seconds / 10 minutes) when the
+ * value is unset, empty, or not a valid positive integer.
+ *
+ * @param {string|undefined} raw - Raw value from the environment.
+ * @returns {number} Validated preflight max-age in seconds.
+ */
+function parseMaxAge(raw) {
+  if (raw === undefined || raw === null || raw.trim() === '') {
+    return DEFAULT_MAX_AGE;
+  }
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_MAX_AGE;
+}
+
+/**
+ * Current preflight `Access-Control-Max-Age` in seconds, read from
+ * `process.env.CORS_MAX_AGE` at module load time.
+ *
+ * @type {number}
+ */
+let maxAge = parseMaxAge(process.env.CORS_MAX_AGE);
+
+/**
+ * Returns the current preflight `Access-Control-Max-Age` value in seconds.
+ *
+ * @returns {number} Max-age in seconds.
+ */
+function getMaxAge() {
+  return maxAge;
+}
+
+/**
+ * Mutable origin allowlist shared by the module-level CORS options object.
+ * Initialised from environment variables at module load, and updated by
+ * {@link reloadCorsOrigins} without restarting the server.
+ *
+ * @type {string[]}
+ */
+let allowedOrigins = getAllowedOriginsFromEnv();
+
+/**
+ * Reloads the origin allowlist from environment variables without restarting
+ * the server.
+ *
+ * Re-reads `CORS_ORIGINS` (and `CORS_ALLOWED_ORIGINS` for backward
+ * compatibility), re-parses the comma-separated list, and replaces the
+ * internal allowlist used by the active CORS options object. In development
+ * mode, falls back to the standard localhost origins when no env var is set.
+ *
+ * This function is safe to call multiple times (e.g. from an admin endpoint
+ * or a config file watcher). New requests immediately use the updated
+ * allowlist; in-flight requests already past the CORS middleware are not
+ * affected.
+ */
+function reloadCorsOrigins() {
+  allowedOrigins = getAllowedOriginsFromEnv();
+}
+
+/**
  * Builds the options object for the `cors` middleware package.
  *
- * The `origin` callback implements exact-match checking against the resolved
- * allowlist. It calls `callback(null, true)` to approve an origin, and
- * `callback(err)` with the rejection error to deny it.
+ * The `origin` callback implements **exact-match** checking against the
+ * resolved allowlist. It calls `callback(null, true)` to approve an origin,
+ * and `callback(err)` with the rejection error to deny it.
+ *
+ * Requests without an `Origin` header are always passed through
+ * (`callback(null, true)`).
+ *
+ * When `CORS_ORIGINS` (or `CORS_ALLOWED_ORIGINS`) is not set:
+ * - In `development` mode, a hard-coded set of localhost origins is allowed.
+ * - In all other environments, every browser origin is denied.
+ *
+ * When called with the default `process.env` (or no argument), the returned
+ * options object reads from a module-level mutable allowlist so that a
+ * subsequent call to {@link reloadCorsOrigins} takes effect without creating
+ * a new middleware instance.
+ *
+ * When called with a custom environment map (e.g. in tests), the returned
+ * options object uses an isolated allowlist derived from that map.
  *
  * @param {NodeJS.ProcessEnv} [env=process.env] - Environment variable map (for testing).
  * @returns {import('cors').CorsOptions} Options ready to pass to `cors()`.
@@ -138,11 +226,54 @@ function isCorsOriginRejectedError(err) {
  * app.use(cors(createCorsOptions()));
  */
 function createCorsOptions(env = process.env) {
-  const allowlist = getAllowedOriginsFromEnv(env);
+  // When called with the real process.env (or no argument), the origin
+  // function closes over the module-level mutable allowlist so that
+  // reloadCorsOrigins() is reflected immediately. The allowlist is
+  // re-synced from the current environment so that callers who mutate
+  // process.env before calling createCorsOptions() get the expected
+  // result (this is relied on by some tests).
+  //
+  // When called with a test-specific env object, a standalone allowlist
+  // with its own closed-over allowlist is used for isolation.
+  if (env === process.env) {
+    allowedOrigins = getAllowedOriginsFromEnv();
+
+    return {
+      /**
+       * Validates request origin against the mutable module-level allowlist.
+       *
+       * @param {string|undefined} origin - The request origin header value.
+       * @param {Function} callback - CORS callback (err, allow).
+       * @returns {void}
+       */
+      origin(origin, callback) {
+        if (origin === undefined) {
+          return callback(null, true);
+        }
+
+        if (allowedOrigins.length === 0) {
+          return callback(createCorsRejectionError(origin));
+        }
+
+        if (allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+
+        return callback(createCorsRejectionError(origin));
+      },
+
+      maxAge,
+      optionsSuccessStatus: 204,
+    };
+  }
+
+  // Test / custom env path: create a standalone options object with its own
+  // isolated allowlist so tests remain independent.
+  const testAllowlist = getAllowedOriginsFromEnv(env);
 
   return {
     /**
-     * Validates request origin against the allowlist.
+     * Validates request origin against the test-specific allowlist.
      *
      * @param {string|undefined} origin - The request origin header value.
      * @param {Function} callback - CORS callback (err, allow).
@@ -153,17 +284,18 @@ function createCorsOptions(env = process.env) {
         return callback(null, true);
       }
 
-      if (allowlist.length === 0) {
+      if (testAllowlist.length === 0) {
         return callback(createCorsRejectionError(origin));
       }
 
-      if (allowlist.includes(origin)) {
+      if (testAllowlist.includes(origin)) {
         return callback(null, true);
       }
 
       return callback(createCorsRejectionError(origin));
     },
 
+    maxAge,
     optionsSuccessStatus: 204,
   };
 }
@@ -175,7 +307,10 @@ module.exports = {
   createCorsRejectionError,
   getAllowedOriginsFromEnv,
   getDevelopmentFallbackOrigins,
+  getMaxAge,
   isCorsOriginRejectedError,
   parseAllowedOrigins,
+  parseMaxAge,
+  reloadCorsOrigins,
   resolveAllowlist,
 };
