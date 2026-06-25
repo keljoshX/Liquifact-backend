@@ -19,17 +19,38 @@ try {
   // Fallback shim for environments without prom-client (tests)
   client = {
     Registry: class {
+      /**
+       *
+       */
       constructor() { this.contentType = 'text/plain'; }
+      /**
+       *
+       */
       metrics() { return ''; }
     },
     collectDefaultMetrics: () => { },
     Counter: class {
+      /**
+       *
+       */
       constructor() {}
+      /**
+       *
+       */
       inc() {}
     },
     Gauge: class {
+      /**
+       *
+       */
       constructor() {}
+      /**
+       *
+       */
       set() {}
+      /**
+       *
+       */
       setToCurrentTime() {}
     },
   };

@@ -32,6 +32,10 @@
 const STELLAR_ADDRESS_RE = /^[CG][A-Z2-7]{55}$/;
 
 class EscrowNotFoundError extends Error {
+  /**
+   *
+   * @param invoiceId
+   */
   constructor(invoiceId) {
     super(`No active escrow contract mapped for invoiceId: ${invoiceId}`);
     this.name = 'EscrowNotFoundError';
@@ -40,6 +44,10 @@ class EscrowNotFoundError extends Error {
 }
 
 class EscrowMapConfigError extends Error {
+  /**
+   *
+   * @param message
+   */
   constructor(message) {
     super(message);
     this.name = 'EscrowMapConfigError';
@@ -90,6 +98,9 @@ function _parseConfig() {
 // Simple module-level in-memory cache
 let _cache = null;
 
+/**
+ *
+ */
 function _getConfig() {
   if (!_cache) {
     _cache = _parseConfig();

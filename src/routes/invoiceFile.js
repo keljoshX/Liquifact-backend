@@ -16,6 +16,10 @@ const router = express.Router();
 
 const invoiceFiles = new Map();
 
+/**
+ *
+ * @param buffer
+ */
 function computeHash(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }

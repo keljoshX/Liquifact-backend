@@ -7,6 +7,9 @@ const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
 /**
  * Middleware: verifies the authenticated user has a bound Stellar wallet address.
  * Accepts wallet from req.user.walletAddress or x-stellar-address header (stub).
+ * @param req
+ * @param res
+ * @param next
  */
 function authorizeSmeWallet(req, res, next) {
   if (!req.user) {

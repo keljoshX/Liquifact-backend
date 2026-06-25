@@ -48,7 +48,8 @@ const authenticateToken = (req, res, next) => {
   let config;
   try {
     config = configModule.get();
-  } catch (err) {
+  } catch (_err) {
+    // Fallback for tests or before config is validated
     config = {
       JWT_SECRET: process.env.JWT_SECRET || 'test-secret',
       JWT_ISSUER: process.env.JWT_ISSUER || 'liquifact-platform',
@@ -65,9 +66,9 @@ const authenticateToken = (req, res, next) => {
     audience: config.JWT_AUDIENCE,
   };
 
-  jwt.verify(token, secret, options, (err, decoded) => {
-    if (err) {
-      if (err.name === 'TokenExpiredError') {
+  jwt.verify(token, secret, options, (_err, decoded) => {
+    if (_err) {
+      if (_err.name === 'TokenExpiredError') {
         return next(new AppError({
           type: 'https://liquifact.com/probs/token-expired',
           title: 'Token Expired',

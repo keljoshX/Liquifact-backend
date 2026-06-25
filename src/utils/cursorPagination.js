@@ -152,6 +152,10 @@ function decodeCursor(cursor, expectedSortField) {
  * HTTP 400 so internal details never leak to the client.
  */
 class CursorError extends Error {
+  /**
+   *
+   * @param message
+   */
   constructor(message) {
     super(message);
     this.name = 'CursorError';

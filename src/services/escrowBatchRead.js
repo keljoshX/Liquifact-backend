@@ -80,7 +80,7 @@ async function batchReadEscrowStates(invoiceIds, options = {}) {
   async function worker() {
     while (remainingIds.length > 0) {
       const id = remainingIds.shift();
-      if (!id) continue;
+      if (!id) {continue;}
 
       try {
         // Isolation: Each call is wrapped in its own try/catch and timeout

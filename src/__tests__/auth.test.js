@@ -16,7 +16,7 @@ app.get('/api/escrow/:invoiceId', authenticateToken, (req, res) => {
 });
 
 // Register an error handler middleware to convert AppError to JSON format
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
     res.status(err.status || 500).json({
         type: err.type,
         title: err.title,

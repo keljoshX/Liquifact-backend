@@ -61,6 +61,9 @@ const s3Client = new S3Client({
 });
 
 class StorageService {
+  /**
+   *
+   */
   constructor() {
     this.bucket = process.env.S3_BUCKET || 'liquifact-invoices';
     this.maxFileSize = MAX_FILE_SIZE;
@@ -74,6 +77,10 @@ class StorageService {
    * @returns {string} Sanitized filename safe for S3 key generation.
    */
  
+  /**
+   *
+   * @param filename
+   */
   _sanitizeFilename(filename) {
   if (!filename || typeof filename !== 'string') {
     const err = new Error('Invalid filename');
@@ -120,6 +127,10 @@ class StorageService {
  */
 
 
+  /**
+   *
+   * @param tenantId
+   */
   _validateTenantId(tenantId) {
     return (
       typeof tenantId === 'string' &&
@@ -137,6 +148,10 @@ class StorageService {
  */
 
 
+  /**
+   *
+   * @param invoiceId
+   */
   _validateInvoiceId(invoiceId) {
     return (
       typeof invoiceId === 'string' &&
@@ -153,6 +168,12 @@ class StorageService {
    * @returns {string} S3 object key.
    */
 
+  /**
+   *
+   * @param tenantId
+   * @param invoiceId
+   * @param safeName
+   */
   _generateKey(tenantId, invoiceId, safeName) {
 
   if (!this._validateTenantId(tenantId)) {

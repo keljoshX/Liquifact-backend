@@ -50,6 +50,10 @@ const TERMINAL_REASON_REQUIRED_STATES = [
 
 const MAX_TRANSITION_REASON_LENGTH = 1024;
 
+/**
+ *
+ * @param reason
+ */
 function normalizeTransitionReason(reason) {
   if (reason === null || reason === undefined) {
     return null;

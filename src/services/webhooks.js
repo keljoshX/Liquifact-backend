@@ -29,7 +29,13 @@ try {
   // In test environments where prom-client may not be installed, provide a noop shim
   client = {
     Counter: class {
+      /**
+       *
+       */
       constructor() { }
+      /**
+       *
+       */
       inc() { }
     },
   };
@@ -142,7 +148,7 @@ async function emitWebhook(event, invoiceId, additionalData = {}) {
 
     // shouldRetry: only on network/timeouts or 5xx
     const shouldRetry = (err) => {
-      if (!err) return false;
+      if (!err) {return false;}
       // network/socket errors often have a code
       if (err.code) {
         return ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(err.code) || err.name === 'AbortError';

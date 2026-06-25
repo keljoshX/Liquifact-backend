@@ -46,7 +46,13 @@ try {
 } catch (_e) {
   promClient = {
     Counter: class {
+      /**
+       *
+       */
       constructor() {}
+      /**
+       *
+       */
       inc() {}
     },
   };
@@ -125,9 +131,9 @@ function deadLetterCounter() {
  * @returns {boolean} True if the request should be retried.
  */
 function shouldRetry(err) {
-  if (!err) return false;
+  if (!err) {return false;}
   // Check name first (AbortError may not have a code)
-  if (err.name === 'AbortError') return true;
+  if (err.name === 'AbortError') {return true;}
   if (err.code) {
     return ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(
       err.code

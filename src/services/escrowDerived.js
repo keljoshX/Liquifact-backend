@@ -70,10 +70,10 @@ function computeFundedPercent(fundedAmount, totalAmount) {
  * @returns {number|null} Null when maturityDate is absent or unparseable.
  */
 function computeDaysToMaturity(maturityDate, now = new Date()) {
-  if (maturityDate == null) return null;
+  if (maturityDate == null) {return null;}
   const maturity =
     maturityDate instanceof Date ? maturityDate : new Date(maturityDate);
-  if (isNaN(maturity.getTime())) return null;
+  if (isNaN(maturity.getTime())) {return null;}
   const nowMs = (now instanceof Date ? now : new Date()).getTime();
   return Math.floor((maturity.getTime() - nowMs) / MS_PER_DAY);
 }

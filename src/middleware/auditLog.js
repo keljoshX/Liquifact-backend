@@ -4,6 +4,10 @@ const { appendAuditEvent, redactValue } = require('../services/auditLogStore');
 
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ *
+ * @param req
+ */
 function getActor(req) {
   if (req.user && typeof req.user === 'object') {
     if (req.user.id) {
@@ -21,10 +25,18 @@ function getActor(req) {
   return { actorType: 'system', actorId: req.ip || 'unknown' };
 }
 
+/**
+ *
+ * @param req
+ */
 function isAdminAction(req) {
   return req.path.startsWith('/api/admin/');
 }
 
+/**
+ *
+ * @param req
+ */
 function buildBaseEvent(req) {
   const actor = getActor(req);
   return {
@@ -37,6 +49,10 @@ function buildBaseEvent(req) {
   };
 }
 
+/**
+ *
+ * @param req
+ */
 function createAuditContext(req) {
   const baseEvent = buildBaseEvent(req);
 
@@ -79,6 +95,12 @@ function createAuditContext(req) {
   };
 }
 
+/**
+ *
+ * @param req
+ * @param res
+ * @param next
+ */
 function auditLogMiddleware(req, res, next) {
   req.audit = createAuditContext(req);
 
