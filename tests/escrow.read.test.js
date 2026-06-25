@@ -20,6 +20,52 @@ jest.mock('../src/services/soroban', () => ({
   }),
 }));
 
+// The global jest setup mocks src/db/knex with a fake builder whose
+// `.first()` always returns the same canned row. That interferes with this
+// suite because the projection read path needs the seeded row to round-trip
+// through .insert() -> .where(invoice_id, ...).first(). Override the global
+// mock here with an in-memory store keyed by invoice_id. The factory is
+// fully self-contained (no external references) so jest's mock-hoisting
+// does not trip on TDZ variables. The mock also exposes `db.destroy()` so
+// the afterAll hook here does not throw on in-memory teardown.
+jest.mock('../src/db/knex', () => {
+  const rows = new Map();
+  const fakeDb = jest.fn((table) => ({
+    _table: table,
+    _whereId: null,
+    where(field, value) {
+      if (typeof field === 'string') {
+        this._whereId = String(value);
+      }
+      return this;
+    },
+    async first() {
+      if (!this._whereId) return null;
+      return rows.get(this._whereId) || null;
+    },
+    async del() {
+      rows.clear();
+      return 0;
+    },
+    async destroy() {
+      rows.clear();
+    },
+    async insert(payload) {
+      const entries = Array.isArray(payload) ? payload : [payload];
+      entries.forEach((entry) => {
+        if (entry && entry.invoice_id) {
+          rows.set(entry.invoice_id, entry);
+        }
+      });
+      return entries.length;
+    },
+  }));
+  fakeDb.destroy = async () => {
+    rows.clear();
+  };
+  return fakeDb;
+}, { virtual: true });
+
 describe('GET /api/escrow/:invoiceId', () => {
   let app;
   let cache;
@@ -47,7 +93,9 @@ describe('GET /api/escrow/:invoiceId', () => {
   it('returns 404 for unknown invoice', async () => {
     const res = await request(app).get('/api/escrow/unknown-inv');
     expect(res.status).toBe(404);
-    expect(res.body.error).toMatch(/No escrow contract mapping found/);
+    // Standardized envelope wraps route errors as `{message, code, details}`
+    expect(res.body.error.message).toMatch(/No escrow contract mapping found/);
+    expect(res.body.error.code).toBe('NOT_FOUND');
   });
 
   it('reads from projection table when cache misses', async () => {
@@ -68,7 +116,14 @@ describe('GET /api/escrow/:invoiceId', () => {
     expect(res.body.data.fundedAmount).toBe(5000);
     expect(res.body.data.latest_ledger_sequence).toBe(12345);
     expect(res.body.data.latest_event_type).toBe('funded');
-    expect(res.body.message).toMatch(/from event projection/);
+    expect(res.body.data.fromProjection).toBe(true);
+    // Standardized envelope: confirm success envelope shape (error=null,
+    // meta stamped with version+timestamp). The original `message` field is
+    // dropped by the wrapper; the data carries a `fromProjection` flag that
+    // is the contract here.
+    expect(res.body.error).toBeNull();
+    expect(res.body.meta).toBeDefined();
+    expect(res.body.meta.version).toBeDefined();
 
     // Verify it was cached
     if (cache) {
@@ -85,7 +140,8 @@ describe('GET /api/escrow/:invoiceId', () => {
     // values. The neutral envelope reports status='not_found' regardless.
     expect(res.body.data.status).toBe('not_found');
     expect(res.body.data.fundedAmount).toBe(0);
-    expect(res.body.message).toMatch(/live Soroban contract/);
+    expect(res.body.data.latest_event_type).toBe('live_read');
+    expect(res.body.error).toBeNull();
   });
 
   it('does NOT fabricate funded/settled state from the legacy fixture names', async () => {
@@ -100,7 +156,6 @@ describe('GET /api/escrow/:invoiceId', () => {
     expect(fundedRes.body.data.status).toBe('not_found');
     expect(fundedRes.body.data.fundedAmount).toBe(0);
     expect(fundedRes.body.data.latest_event_type).toBe('live_read');
-    expect(fundedRes.body.message).toMatch(/live Soroban contract/);
 
     const settledRes = await request(app).get('/api/escrow/settled_invoice');
     expect(settledRes.status).toBe(200);
