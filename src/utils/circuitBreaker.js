@@ -44,6 +44,7 @@ class CircuitBreaker {
   /**
    * Updates the internal state and fires the onStateChange callback if provided.
    * @param {string} newState - The new state to transition to.
+   * @returns {void}
    */
   _transitionState(newState) {
     if (this.state !== newState) {
