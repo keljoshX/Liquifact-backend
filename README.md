@@ -671,9 +671,11 @@ For production deployments:
 
 The repo includes a focused load baseline suite for representative core endpoint reads:
 
-- `GET /health`
-- `GET /api/invoices`
-- `GET /api/escrow/:invoiceId`
+- `GET /health` — health check (critical path)
+- `GET /api/invoices` — invoice list
+- `GET /api/escrow/:invoiceId` — escrow state read
+- `GET /api/marketplace` — marketplace search (hot endpoint)
+- `GET /api/invest/opportunities` — investment opportunities list (hot endpoint)
 
 The suite uses `autocannon` and captures:
 
@@ -689,7 +691,7 @@ The suite uses `autocannon` and captures:
 
 ### Why these endpoints
 
-These are the canonical health, invoices, and escrow endpoints currently exposed by the backend. They provide a low-risk baseline for throughput and latency without introducing destructive writes.
+These are the canonical health, invoices, escrow, marketplace, and invest endpoints currently exposed by the backend. Marketplace and invest/opportunities are prioritized as hot read endpoints with strict latency and error-rate assertions.
 
 ### Safe defaults
 
@@ -701,6 +703,20 @@ The load suite is intentionally safe by default:
 - it uses a placeholder escrow invoice id unless a fixture id is provided
 
 Do not run the suite against production without explicit approval.
+
+### Baseline assertions
+
+The suite includes strict load assertions for hot endpoints (`marketplace`, `invest-opportunities`):
+
+| Endpoint | p99 Latency Ceiling | Max Error Rate |
+| --- | --- | --- |
+| `marketplace` | 1000 ms | 1% |
+| `invest-opportunities` | 1000 ms | 1% |
+| `invoices-list` | 500 ms | 1% |
+| `escrow-read` | 500 ms | 1% |
+| `health` | 50 ms | 0% |
+
+Assertions are gated behind `ENABLE_LOAD_BASELINES=true` to prevent automatic execution during the default test suite. Run them explicitly when validating performance targets.
 
 ### Environment variables
 
@@ -714,6 +730,7 @@ Do not run the suite against production without explicit approval.
 | `LOAD_AUTH_TOKEN` | unset | Optional bearer token for protected endpoints |
 | `LOAD_ESCROW_INVOICE_ID` | `placeholder-invoice` | Escrow fixture id |
 | `LOAD_REPORT_DIR` | `tests/load/reports` | Directory for generated reports |
+| `ENABLE_LOAD_BASELINES` | `false` | Gate for baseline assertion tests (marketplace, invest endpoints) |
 
 ### How to run
 
@@ -734,6 +751,19 @@ Do not run the suite against production without explicit approval.
    ```bash
    LOAD_DURATION_SECONDS=20 LOAD_CONNECTIONS=25 LOAD_ESCROW_INVOICE_ID=invoice-123 npm run load:baseline
    ```
+
+4. To run baseline assertion tests for hot endpoints (marketplace, invest):
+
+   ```bash
+   ENABLE_LOAD_BASELINES=true npm test -- baselines.test.js
+   ```
+
+### Security notes
+
+- Remote load targets are blocked by default.
+- Secrets and tokens must come from environment variables.
+- The suite never prints auth tokens.
+- The selected baseline endpoints are low-risk reads.
 
 ---
 
@@ -1120,64 +1150,6 @@ curl -H "Authorization: Bearer <admin-jwt>" \
 
 ---
 
-
-## Load baseline suite
-
-The repo includes a focused load baseline suite for representative core endpoint reads:
-
-- `GET /health`
-- `GET /api/invoices`
-- `GET /api/escrow/:invoiceId`
-
-The suite uses `autocannon` and captures:
-
-- total requests
-- throughput in requests per second
-- average latency
-- p50 latency
-- p95 latency
-- p99 latency
-- error count
-- non-2xx count
-- timeout count
-
-### Safe defaults
-
-- targets `http://127.0.0.1:3001`
-- blocks remote targets unless `ALLOW_REMOTE_LOAD_BASELINES=true`
-- does not hardcode tokens or credentials
-- uses a placeholder escrow invoice id unless a fixture id is provided
-
-Do not run the suite against production without explicit approval.
-
-### Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `LOAD_BASE_URL` | `http://127.0.0.1:3001` | Base URL for the load target |
-| `ALLOW_REMOTE_LOAD_BASELINES` | `false` | Explicit opt-in for non-local targets |
-| `LOAD_DURATION_SECONDS` | `15` | Duration per endpoint scenario |
-| `LOAD_CONNECTIONS` | `10` | Concurrent connections per scenario |
-| `LOAD_TIMEOUT_SECONDS` | `10` | Request timeout |
-| `LOAD_AUTH_TOKEN` | unset | Optional bearer token for protected endpoints |
-| `LOAD_ESCROW_INVOICE_ID` | `placeholder-invoice` | Escrow fixture id |
-| `LOAD_REPORT_DIR` | `tests/load/reports` | Directory for generated reports |
-
-### How to run
-
-```bash
-npm run dev
-npm run load:baseline
-```
-
-### Security notes
-
-- Remote load targets are blocked by default.
-- Secrets and tokens must come from environment variables.
-- The suite never prints auth tokens.
-- The selected baseline endpoints are low-risk reads.
-
----
 
 ## Structured API errors
 
