@@ -178,10 +178,16 @@ const cacheMiddleware = cacheResponse({
  */
 router.get('/', cacheMiddleware, async (req, res, next) => {
   try {
-    const { isValid, errors, validatedParams } = validateMarketplaceQueryParams(req.query);
+    const { isValid, fieldErrors, validatedParams } = validateMarketplaceQueryParams(req.query);
 
     if (!isValid) {
-      return res.status(400).json({ errors });
+      return res.status(400).json({
+        type: 'https://liquifact.io/problems/validation-error',
+        title: 'Validation Error',
+        status: 400,
+        detail: 'Query parameters contain invalid values.',
+        fieldErrors,
+      });
     }
 
     // Enforce explicit visibility rules; never allow clients to enumerate
@@ -192,9 +198,13 @@ router.get('/', cacheMiddleware, async (req, res, next) => {
       !marketplaceService.PUBLIC_INVESTABLE_INVOICE_STATUSES.includes(validatedParams.filters.status)
     ) {
       return res.status(400).json({
-        errors: [
-          `Invalid status for marketplace. Must be one of: ${marketplaceService.PUBLIC_INVESTABLE_INVOICE_STATUSES.join(', ')}`,
-        ],
+        type: 'https://liquifact.io/problems/validation-error',
+        title: 'Validation Error',
+        status: 400,
+        detail: 'Query parameters contain invalid values.',
+        fieldErrors: {
+          status: `Invalid status for marketplace. Must be one of: ${marketplaceService.PUBLIC_INVESTABLE_INVOICE_STATUSES.join(', ')}`,
+        },
       });
     }
 
@@ -207,7 +217,15 @@ router.get('/', cacheMiddleware, async (req, res, next) => {
     } catch (err) {
       // CursorError is a client error (malformed/tampered cursor) → 400
       if (err instanceof CursorError) {
-        return res.status(400).json({ errors: [err.message] });
+        return res.status(400).json({
+          type: 'https://liquifact.io/problems/validation-error',
+          title: 'Validation Error',
+          status: 400,
+          detail: 'Query parameters contain invalid values.',
+          fieldErrors: {
+            cursor: err.message,
+          },
+        });
       }
       throw err;
     }
