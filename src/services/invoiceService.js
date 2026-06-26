@@ -28,7 +28,8 @@
 const db = require('../db/knex');
 const { applyQueryOptions } = require('../utils/queryBuilder');
 const logger = require('../logger');
-const { executeTransition } = require('./invoiceStateMachine');
+const AppError = require('../errors/AppError');
+const { LOCKED_STATUSES } = require('../middleware/patchInvoice');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -263,7 +264,22 @@ async function updateInvoice(id, updates = {}, tenantId) {
   if (!id) {
     throw new TypeError('invoice id required');
   }
+  // Ensure invoice exists and belongs to tenant
+  const existing = await db('invoices').where({ invoice_id: id, tenant_id: tenantId }).first();
+  if (!existing) {
+    return null;
+  }
 
+  // Reject updates when invoice is in a locked status
+  if (existing && LOCKED_STATUSES.has(existing.status)) {
+    throw new AppError({
+      type: 'https://liquifact.com/probs/validation-error',
+      title: 'Validation Error',
+      status: 422,
+      detail: `Invoice in status '${existing.status}' cannot be modified.`,
+      code: 'LOCKED_STATUS',
+    });
+  }
   const result = await db('invoices')
     .where({ invoice_id: id, tenant_id: tenantId })
     .update({ ...updates, updated_at: nowValue() })
@@ -288,6 +304,23 @@ async function updateInvoice(id, updates = {}, tenantId) {
 async function deleteInvoice(id, tenantId) {
   if (!id) {
     throw new TypeError('invoice id required');
+  }
+
+  // Ensure invoice exists and belongs to tenant
+  const existing = await db('invoices').where({ invoice_id: id, tenant_id: tenantId }).first();
+  if (!existing) {
+    return null;
+  }
+
+  // Reject deletes when invoice is in a locked status
+  if (existing && LOCKED_STATUSES.has(existing.status)) {
+    throw new AppError({
+      type: 'https://liquifact.com/probs/validation-error',
+      title: 'Validation Error',
+      status: 422,
+      detail: `Invoice in status '${existing.status}' cannot be deleted.`,
+      code: 'LOCKED_STATUS',
+    });
   }
 
   const ts = nowValue();

@@ -26,7 +26,8 @@ const { resolveEscrowAddress } = require('../../config/escrowMap');
 const { callSorobanContract } = require('../../services/soroban');
 const { computeEscrowDerivedFields } = require('../../services/escrowDerived');
 const AppError = require('../../errors/AppError');
-const { invoiceCreateSchema, parseValidationErrors } = require('../../schemas/invoice');
+const { invoiceCreateSchema, invoiceUpdateSchema, parseValidationErrors } = require('../../schemas/invoice');
+const { validatePatchFields, detectLockedFieldChange } = require('../../middleware/patchInvoice');
 
 // ── Sub-router mounts ────────────────────────────────────────────────────────
 router.use('/invest', investRoutes);
@@ -157,36 +158,87 @@ router.post('/invoices', extractTenant, async (req, res, next) => {
   }
 });
 
-// ── Escrow route ─────────────────────────────────────────────────────────────
-
 /**
- * GET /v1/escrow/:invoiceId
+ * PATCH /v1/invoices/:id
  *
- * Reads escrow state and merges derived display fields:
- *   apyPercent, fundedPercent, daysToMaturity (computed from ledgerCloseTime
- *   when present, falling back to server wall clock).
- *
- * @param {string} req.params.invoiceId - Invoice identifier.
- * @returns {200} { data: EscrowState & DerivedFields }
- * @returns {401} Missing or invalid JWT.
- * @returns {404} No escrow address mapping found.
+ * Partially updates an invoice scoped to the authenticated tenant. Field-level
+ * guards are applied via `validatePatchFields` which strips unknown keys and
+ * enforces the mutable-field set. Attempts to change locked fields for
+ * invoices in locked statuses result in a 422 AppError.
  */
-router.get('/escrow/:invoiceId', authenticateToken, async (req, res, next) => {
+router.patch('/invoices/:id', extractTenant, validatePatchFields, async (req, res, next) => {
   try {
-    const invoiceId = String(req.params.invoiceId || '').trim();
+    const invoiceId = String(req.params.id || '').trim();
 
-    const escrowAddress = resolveEscrowAddress(invoiceId);
-    if (!escrowAddress) {
-      return res.status(404).json({ error: `No escrow contract mapping found for invoice ID '${invoiceId}'` });
+    // Validate sanitized payload with Zod update schema
+    const parsed = invoiceUpdateSchema.safeParse(req.sanitizedUpdate);
+    if (!parsed.success) {
+      const fieldErrors = parseValidationErrors(parsed.error);
+      return next(
+        new AppError({
+          type: 'https://liquifact.com/probs/validation-error',
+          title: 'Validation Error',
+          status: 422,
+          detail: 'Request body contains invalid or missing fields.',
+          instance: req.originalUrl,
+          code: 'VALIDATION_ERROR',
+          retryable: false,
+          fieldErrors,
+        }),
+      );
     }
 
-    const baseState = await callSorobanContract(async () => ({ invoiceId, status: 'not_found', fundedAmount: 0 }));
+    // Ensure resource exists and belongs to tenant
+    const existing = await invoiceService.getInvoiceById(invoiceId, req.tenantId);
+    if (!existing) {
+      return next(new AppError({ title: 'Not Found', status: 404, detail: 'Invoice not found' }));
+    }
 
-    const derived = computeEscrowDerivedFields(baseState, {
-      ledgerCloseTime: baseState.ledgerCloseTime ?? null,
-    });
+    // Enforce locked-field rules
+    const { locked, field } = detectLockedFieldChange(req.sanitizedUpdate, existing.status);
+    if (locked) {
+      return next(
+        new AppError({
+          type: 'https://liquifact.com/probs/validation-error',
+          title: 'Validation Error',
+          status: 422,
+          detail: `Field '${field}' cannot be modified when invoice status is '${existing.status}'.`,
+          instance: req.originalUrl,
+          code: 'LOCKED_FIELD',
+          retryable: false,
+          fieldErrors: { [field]: 'Field is locked for this invoice status' },
+        }),
+      );
+    }
 
-    return res.json({ data: { ...baseState, ...derived } });
+    const updates = parsed.data;
+    const updated = await invoiceService.updateInvoice(invoiceId, updates, req.tenantId);
+
+    if (!updated) {
+      return next(new AppError({ title: 'Not Found', status: 404, detail: 'Invoice not found' }));
+    }
+
+    return res.json({ data: updated, message: 'Invoice updated successfully.' });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/**
+ * DELETE /v1/invoices/:id
+ *
+ * Soft-deletes the invoice by setting `deleted_at`. Scoped to tenant.
+ */
+router.delete('/invoices/:id', extractTenant, async (req, res, next) => {
+  try {
+    const invoiceId = String(req.params.id || '').trim();
+
+    const deleted = await invoiceService.deleteInvoice(invoiceId, req.tenantId);
+    if (!deleted) {
+      return next(new AppError({ title: 'Not Found', status: 404, detail: 'Invoice not found' }));
+    }
+
+    return res.json({ data: deleted, message: 'Invoice deleted (soft-delete) successfully.' });
   } catch (err) {
     return next(err);
   }
