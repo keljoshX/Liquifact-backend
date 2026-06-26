@@ -163,6 +163,54 @@ Error: Mismatch: STELLAR_NETWORK=TESTNET requires SOROBAN_RPC_URL="https://sorob
 
 ---
 
+## API Key Authentication
+
+Service-to-service callers authenticate with the `X-API-Key` request header. Keys are loaded from the `API_KEYS` environment variable — **no database connection is opened per request**.
+
+### Configuration
+
+Set `API_KEYS` as a semicolon-separated list of JSON objects:
+
+```
+API_KEYS={"key":"lf_svc_key_001","clientId":"billing-service","scopes":["invoices:read","invoices:write"]};{"key":"lf_old_key_001","clientId":"legacy-service","scopes":["invoices:read"],"revoked":true}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | yes | Raw API key — must start with `lf_`, minimum 10 chars |
+| `clientId` | string | yes | Unique identifier for the service client |
+| `scopes` | string[] | yes | Permissions granted; valid values: `invoices:read`, `invoices:write`, `escrow:read` |
+| `revoked` | boolean | no | Set `true` to reject the key without removing it from the list |
+
+### Key rotation (zero-downtime)
+
+1. Add the new key entry to `API_KEYS` and deploy — old and new key both work.
+2. Update callers to use the new key.
+3. Set `"revoked": true` on the old entry and redeploy — old key is rejected immediately.
+
+### Security properties
+
+- **No database per request** — the former SQLite-backed path (`src/middleware/apiKey.js`) has been retired; the registry is parsed from environment variables at startup.
+- **Timing-safe comparison** — `authenticateApiKey` iterates every registry entry on every request using `crypto.timingSafeEqual`; it never short-circuits on the first match, preventing timing-based key enumeration.
+- **No key material in logs** — the raw key is never written to any log line; failed lookups record only a 401 response.
+- **Revocation without redeploy** — setting `revoked: true` and redeploying is sufficient; no DB update needed.
+
+### Middleware usage
+
+```js
+const { authenticateApiKey } = require('./middleware/apiKeyAuth');
+
+// No scope requirement — any valid, non-revoked key is accepted
+router.use(authenticateApiKey());
+
+// Require a specific scope
+router.use(authenticateApiKey({ requiredScope: 'invoices:write' }));
+```
+
+On success, `req.apiClient` is set to `{ clientId, scopes }`.
+
+---
+
 ## Development
 
 | Command | Description |

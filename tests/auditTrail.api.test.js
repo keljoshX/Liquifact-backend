@@ -9,11 +9,13 @@
 const { Readable } = require('stream');
 
 jest.mock('../src/db/knex');
-jest.mock('../src/middleware/apiKey', () => ({
-  apiKeyAuth: jest.fn((req, res, next) => {
+jest.mock('../src/middleware/apiKeyAuth', () => ({
+  authenticateApiKey: jest.fn(() => jest.fn((req, res, next) => {
     req.apiClient = { clientId: 'api-client-1' };
     next();
-  }),
+  })),
+  API_KEY_HEADER: 'x-api-key',
+  timingSafeStringEqual: (a, b) => a === b,
 }));
 
 // ── Mock the streaming helpers so CSV export tests don't need a real DB ───────

@@ -5,26 +5,29 @@ const { z } = require('zod');
 const db = require('../db/knex');
 const retentionJob = require('../jobs/retentionPurge');
 const { authenticateToken } = require('../middleware/auth');
-const { apiKeyAuth } = require('../middleware/apiKey');
+const { authenticateApiKey } = require('../middleware/apiKeyAuth');
 const { sensitiveLimiter } = require('../middleware/rateLimit');
 const AppError = require('../errors/AppError');
 const logger = require('../logger');
 
 const router = express.Router();
 
+const _retentionApiKeyMiddleware = authenticateApiKey();
+
 /**
- * Combined authentication middleware: allows JWT or API key for admin/service auth
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next function
+ * Combined authentication middleware: allows JWT or API key for admin/service auth.
+ * Uses the env-registry-backed authenticateApiKey with timing-safe comparison.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
  * @returns {void}
  */
 function adminAuth(req, res, next) {
   if (req.headers['x-api-key']) {
-    return apiKeyAuth(req, res, next);
-  } else {
-    return authenticateToken(req, res, next);
+    return _retentionApiKeyMiddleware(req, res, next);
   }
+  return authenticateToken(req, res, next);
 }
 
 // Validation schemas
